@@ -800,9 +800,13 @@ switch ($Cmd) {
 chcp 65001 >nul
 net session >nul 2>&1
 if errorlevel 1 (
-  echo 請在這個檔案上按右鍵，選「以系統管理員身分執行」。
-  pause
-  exit /b 1
+  echo 需要系統管理員權限，正在要求提升權限 ^(請在 UAC 視窗按「是」^)...
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" >nul 2>&1
+  if errorlevel 1 (
+    echo 無法提升權限。請按 Win+X 開啟「終端機 ^(系統管理員^)」，cd 到這個資料夾後執行 .\%~nx0
+    pause
+  )
+  exit /b
 )
 @@CMD@@
 pause
