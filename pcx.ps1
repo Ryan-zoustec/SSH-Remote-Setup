@@ -2,6 +2,7 @@
 <#
   pcx - 在 PC1 上用一個指令管理並操作遠端電腦 (Windows / Ubuntu / 雲端 VM)。
 
+  pcx wizard                           Windows 互動精靈：一步步詢問並代為執行 (也可雙擊 WIZARD.cmd)
   pcx guide [名稱]                     引導流程：檢查目前做到哪一步，並告訴你下一個要執行的指令 (從這裡開始)
   pcx help [主題]                      完整中文使用說明；主題: setup admin errors env daily remove security ai notes
   pcx install                          安裝成全域指令 (只需一次)
@@ -58,7 +59,7 @@ $HostsFile  = Join-Path $PcxDir 'hosts.json'
 $SshDir     = Join-Path $HOME '.ssh'
 $SshConfig  = Join-Path $SshDir 'config'
 $DefaultKey = Join-Path $SshDir 'id_ed25519_pcx'
-$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide'
+$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide', 'wizard'
 
 # ---------------------------------------------------------------------------
 # errorRequest：pcx 無法自行解決時，輸出固定格式的區塊，請使用者(或 AI 轉告使用者)處理
@@ -121,7 +122,8 @@ function Ensure-Key {
 function Remove-ConfigBlock($name) {
     if (-not (Test-Path $SshConfig)) { return }
     $txt = Get-Content $SshConfig -Raw
-    $pat = "(?ms)^# >>> pcx $([regex]::Escape($name)) >>>.*?^# <<< pcx $([regex]::Escape($name)) <<<\r?\n?"
+    if (-not $txt) { return }   # 空的 config (第一次 add 時) 沒有要移除的區塊
+    $pat ="(?ms)^# >>> pcx $([regex]::Escape($name)) >>>.*?^# <<< pcx $([regex]::Escape($name)) <<<\r?\n?"
     Set-Content $SshConfig ([regex]::Replace($txt, $pat, '')) -Encoding utf8NoBOM -NoNewline
 }
 function Get-SshOpts {
@@ -284,6 +286,9 @@ $GuideTitle = [ordered]@{
 }
 $GuideText = @{
 setup = @'
+最簡單：在 Windows 的 PC1 雙擊 WIZARD.cmd (或執行 pcx wizard)，互動精靈會一步步問你並代為執行下面的步驟；
+PC2 是 Ubuntu 時精靈會改帶你看 pcx guide。想自己打指令就照以下步驟，隨時可用 pcx guide 看進度。
+
 PC1 = 你正在用的電腦 (Windows，需要 PowerShell 7 與 OpenSSH 客戶端)。
 PC2 = 要被操作的電腦 (Windows 或 Ubuntu)。PC2 只開 OpenSSH，不裝 AI、不登入帳號。
 
@@ -404,6 +409,7 @@ security = @'
 '@
 ai = @'
 (完整版見 AI-GUIDE.md；以下為重點)
+- pcx wizard 是給人用的互動精靈，AI 不要執行它 (非互動終端機會被拒絕)；AI 用 pcx guide 看進度。
 - 操作 PC2 一律用 pcx <名稱> "<指令>"，不要改用其他連線方式；先 pcx status <名稱> 確認在線。
 - 讀最後一行 [exit code: N]，非 0 就是失敗，不可假裝成功。
 - 出現 [errorRequest:代碼]：立刻停止，把「問題」與「需要」原樣轉告使用者，等回覆後才繼續；
@@ -515,6 +521,7 @@ function Show-Wizard([string]$name) {
 
     ''
     '日常操作：pcx <名稱> "<指令>"、pcx <名稱> -File 腳本、pcx put/get、pcx status、pcx list   (pcx help daily)'
+    '想要一步步問答、代為執行：pcx wizard (Windows 互動精靈，也可雙擊 WIZARD.cmd)'
     '用完收尾：pcx teardown <名稱> 移除某台；pcx uninstall -All -Yes 全部清乾淨          (pcx help remove)'
     '遇到 [errorRequest:代碼]：照「需要」處理後再繼續                                   (pcx help errors)'
     ''
@@ -528,6 +535,210 @@ function Show-Wizard([string]$name) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# pcx wizard：Windows 互動精靈。一步步詢問，代為執行 PC1 端的指令 (install / invite / add / harden / agents …)。
+# 守則同 AI-GUIDE：不碰密碼與私鑰；PC2 的安裝由使用者自己在 PC2 做；會改變 PC2 的動作先確認；errorRequest 會停下說明。
+# PC2 是 Ubuntu 時不走精靈，改用 pcx guide。
+# ---------------------------------------------------------------------------
+function Read-Answer([string]$prompt, [string]$default = '') {
+    $p = if ($default) { "$prompt [$default]" } else { $prompt }
+    if ([Console]::IsInputRedirected) { Write-Host -NoNewline "$p`: "; $v = [Console]::In.ReadLine(); Write-Host $v }
+    else { $v = Read-Host $p }
+    if ($null -eq $v) { Write-Host "`n(輸入已結束，精靈離開)"; exit 1 }
+    $v = $v.Trim()
+    if ($v -eq '' -and $default) { return $default }
+    return $v
+}
+function Read-YesNo([string]$prompt, [bool]$default = $true) {
+    $d = if ($default) { 'Y/n' } else { 'y/N' }
+    while ($true) {
+        $v = Read-Answer "$prompt ($d)"
+        if ($v -eq '') { return $default }
+        if ($v -match '^[yY]') { return $true }
+        if ($v -match '^[nN]') { return $false }
+    }
+}
+function Read-Menu([string]$title, [string[]]$items, [string]$default = '1') {
+    Write-Host $title
+    for ($i = 0; $i -lt $items.Count; $i++) { Write-Host ("  {0}) {1}" -f ($i + 1), $items[$i]) }
+    while ($true) {
+        $v = Read-Answer '請選擇' $default
+        if ($v -match '^[qQ]$') { return 0 }
+        if ($v -match '^\d+$' -and [int]$v -ge 1 -and [int]$v -le $items.Count) { return [int]$v }
+        Write-Host "請輸入 1-$($items.Count)，或 q 離開。"
+    }
+}
+# 以子行程執行 pcx 的某個功能 (沿用原本的程式路徑與錯誤處理)，畫面即時顯示；回傳結束碼，輸出存在 $script:WizOut
+function Invoke-PcxStep([string[]]$argv) {
+    Write-Host ("`n> pcx " + (($argv | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' ')) -ForegroundColor Cyan
+    $lines = @(@() | & pwsh -NoProfile -File $PSCommandPath @argv 2>&1 | ForEach-Object { $s = "$_"; Write-Host $s; $s })
+    $script:WizOut = $lines -join "`n"
+    return $LASTEXITCODE
+}
+function Stop-OnErrorRequest([int]$code) {
+    if ($code -eq 0) { return $false }
+    if ($script:WizOut -match '\[errorRequest:') { Write-Host "`n上面的 [errorRequest] 說明了問題與需要你處理的事。處理完後可重新執行 pcx wizard。" -ForegroundColor Yellow }
+    else { Write-Host "`n這一步失敗了 (結束碼 $code)，請看上方訊息。" -ForegroundColor Yellow }
+    return $true
+}
+function Read-HostName([hashtable]$h) {
+    while ($true) {
+        $n = Read-Answer '幫這台 PC2 取個名稱 (英數字、- 、_)' 'pc2'
+        if ($n -notmatch '^[A-Za-z0-9_-]+$' -or $n -in $Verbs) { Write-Host '名稱只能用英數字、- 、_，且不可與 pcx 的指令同名。'; continue }
+        if ($h.ContainsKey($n) -and -not (Read-YesNo "$n 已經註冊過，要覆蓋嗎?" $false)) { continue }
+        return $n
+    }
+}
+
+function Start-WizardNewHost {
+    $os = Read-Menu "`nPC2 是什麼系統?" @('Windows', 'Ubuntu')
+    if ($os -eq 0) { return }
+    if ($os -eq 2) {
+        Write-Host "`nUbuntu 的 PC2 請照 pcx guide 的步驟進行 (每一步會告訴你下一個指令)："
+        [void](Invoke-PcxStep @('guide'))
+        Write-Host "`n完整說明: pcx help setup"
+        return
+    }
+    $conn = Read-Menu "`nPC1 和 PC2 怎麼連線?" @(
+        '同一個區網 (家裡/公司同一個路由器)',
+        '網線直連 (兩台用網路線直接接)',
+        'VPN (例如 Tailscale)',
+        '指定來源網段 (例如 192.168.1.0/24)',
+        '經跳板機',
+        '雲端 VM，已經有 SSH 與 .pem 金鑰')
+    if ($conn -eq 0) { return }
+    $h = Get-Hosts
+
+    if ($conn -eq 6) {
+        $name = Read-HostName $h
+        $user = Read-Answer '登入的使用者名稱' 'Administrator'
+        $ip   = Read-Answer 'VM 的公網 IP 或網域'
+        while (-not (Test-Path -LiteralPath ($pem = Read-Answer '.pem 私鑰檔的路徑'))) { Write-Host '找不到這個檔案，請再輸入一次。' }
+        $port = Read-Answer 'SSH 埠' '22'
+        if (Stop-OnErrorRequest (Invoke-PcxStep @('add', $name, "$user@$ip", '-Key', $pem, '-Port', $port))) { return }
+        Complete-WizardHost $name
+        return
+    }
+
+    $allow = switch ($conn) { 3 { '100.64.0.0/10' } 4 { $null } default { 'LocalSubnet' } }
+    if ($conn -eq 3) { Write-Host 'VPN 預設允許 Tailscale 網段 100.64.0.0/10。'; if (-not (Read-YesNo '使用這個網段?' $true)) { $allow = $null } }
+    while (-not $allow) {
+        $v = Read-Answer '允許連入的來源網段 (CIDR，例如 192.168.1.0/24)'
+        if ($v -match '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') { $allow = $v } else { Write-Host '格式不對，請輸入像 192.168.1.0/24 的網段。' }
+    }
+    if ($conn -eq 2) { Write-Host "`n提醒：網線直連請先在兩台手動設定同網段的固定 IP (例如 192.168.50.1 / 192.168.50.2)。" }
+
+    # 產生安裝資料夾 (若已產生過且 PC2 已安裝，可直接跳到註冊)
+    $outName = 'pcx-pc2-windows'
+    $kit = Join-Path (Get-Location) $outName
+    $skipKit = (Test-Path $kit) -and (Test-Path $DefaultKey) -and (Read-YesNo "`n這裡已經有 $outName。PC2 已經用它安裝完成了嗎? (是 = 直接跳到註冊)" $false)
+    if (-not $skipKit) {
+        Write-Host "`n接下來會在 $(Get-Location) 產生資料夾 $outName (明文腳本 + PC1 的公鑰，不含私鑰)。來源限制: $allow"
+        if (-not (Read-YesNo '產生安裝資料夾?' $true)) { return }
+        if (Stop-OnErrorRequest (Invoke-PcxStep @('invite', 'windows', '-AllowFrom', $allow))) { return }
+        if (Read-YesNo '要開啟檔案總管顯示這個資料夾嗎?' $true) { Start-Process explorer.exe "/select,`"$kit`"" }
+
+        Write-Host "`n===== 請你到 PC2 操作 (這一步只能由你做) =====" -ForegroundColor Green
+        Write-Host "  1. 把整個 $outName 資料夾複製到 PC2 (隨身碟、雲端硬碟皆可)"
+        Write-Host '  2. 在 PC2 對 INSTALL.cmd 按右鍵，選「以系統管理員身分執行」'
+        Write-Host '  3. 等畫面最後印出 IP，記下來'
+        Write-Host '  (要登入的帳號必須是 PC2 的「管理員帳號」，否則之後無法做需要管理員的操作)'
+        if (-not (Read-YesNo "`nPC2 安裝完成了嗎?" $true)) { Write-Host '完成後重新執行 pcx wizard，選「新增一台 PC2」，在同一個資料夾會問你是否直接跳到註冊。'; return }
+    }
+
+    $name = Read-HostName $h
+    while ($true) {
+        $user = Read-Answer 'PC2 的管理員帳號名稱'
+        $ip   = Read-Answer 'PC2 畫面印出的 IP (或電腦名稱)'
+        $argv = @('add', $name, "$user@$ip")
+        if ($conn -eq 5) { $argv += @('-Jump', (Read-Answer '跳板機 (使用者@主機)')) }
+        $port = Read-Answer 'SSH 埠' '22'
+        if ($port -ne '22') { $argv += @('-Port', $port) }
+        $code = Invoke-PcxStep $argv
+        if ($code -eq 0) { break }
+        [void](Stop-OnErrorRequest $code)
+        if (-not (Read-YesNo '要修正後重新輸入帳號/IP 再試一次嗎?' $true)) { return }
+    }
+    Complete-WizardHost $name
+}
+
+# 註冊成功後：測試、harden、agents
+function Complete-WizardHost([string]$name) {
+    Write-Host "`n測試在 $name 上執行 hostname ..."
+    if (Stop-OnErrorRequest (Invoke-PcxStep @($name, 'hostname'))) { return }
+    $info = (Get-Hosts)[$name]
+    if ($info.hardened) { Write-Host "`n$name 已經關閉密碼登入。" }
+    elseif (-not $info.admin) { Write-Host "`n$name 這個帳號沒有管理員/sudo 權限，先略過「關閉密碼登入」。(pcx help admin)" }
+    else {
+        Write-Host "`n建議關閉 $name 的密碼登入，只留金鑰：會先確認金鑰可登入才動手，結束後再驗證一次。"
+        if (Read-YesNo "現在關閉 $name 的密碼登入?" $true) { [void](Stop-OnErrorRequest (Invoke-PcxStep @('harden', $name))) }
+        else { Write-Host "之後可執行: pcx harden $name" }
+    }
+    if (Read-YesNo "`n要在目前資料夾 ($(Get-Location)) 的 AGENTS.md 寫入給 AI 的用法嗎?" $false) { [void](Invoke-PcxStep @('agents')) }
+    Write-Host "`n完成！之後可以這樣用：" -ForegroundColor Green
+    Write-Host "  pcx $name `"Get-Service sshd`"        在 PC2 執行指令 (Windows 用 PowerShell 語法)"
+    Write-Host "  pcx put $name .\a.zip C:/temp/a.zip  上傳；pcx get 下載"
+    Write-Host "  pcx status                          檢查是否在線"
+    Write-Host "  pcx teardown $name                  用完移除 PC2 的遠端存取"
+}
+
+function Select-WizardHost([hashtable]$h) {
+    $names = @($h.Keys | Sort-Object)
+    $i = Read-Menu "`n選一台電腦:" ($names | ForEach-Object { '{0}  ({1})' -f $_, $h[$_].os })
+    if ($i -eq 0) { return $null }
+    return $names[$i - 1]
+}
+
+function Start-Wizard {
+    if (-not $IsWindows) { Write-Host '互動精靈只在 Windows 上使用；請改用 pcx guide。'; exit 1 }
+    if ([Console]::IsInputRedirected -and -not $env:PCX_WIZARD_STDIN) {
+        Write-Host '偵測到不是互動式終端機 (例如 AI 工具在執行)。互動精靈需要你親自回答問題；AI 請改用 pcx guide。'
+        exit 1
+    }
+    Write-Host '==============================================' -ForegroundColor Green
+    Write-Host ' pcx 互動精靈：讓這台電腦 (PC1) 操作另一台 PC2' -ForegroundColor Green
+    Write-Host ' 隨時輸入 q 或按 Ctrl+C 離開。不會詢問或儲存任何密碼。' -ForegroundColor Green
+    Write-Host '==============================================' -ForegroundColor Green
+
+    # 環境
+    if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
+        Write-ErrorRequest 'SSH_CLIENT_MISSING' '這台電腦找不到 ssh 指令 (OpenSSH 客戶端)。' '請安裝 OpenSSH 客戶端: 設定 > 應用程式 > 選用功能 > 新增功能 > OpenSSH 用戶端；安裝後重開終端機再執行精靈。'
+        exit 1
+    }
+    # 安裝全域指令
+    $shimOk = (Test-Path (Join-Path $env:APPDATA 'npm\pcx.cmd')) -or (Test-Path (Join-Path $PcxDir 'pcx.cmd'))
+    if (-not ($shimOk -and (Test-Path (Join-Path $PcxDir 'pcx.ps1')))) {
+        Write-Host "`n還沒安裝 pcx 全域指令 (安裝後任何資料夾都能直接打 pcx)。"
+        if (Read-YesNo '現在安裝?' $true) { if (Stop-OnErrorRequest (Invoke-PcxStep @('install'))) { exit 1 } }
+    }
+
+    while ($true) {
+        $h = Get-Hosts
+        $items = @('新增一台 PC2 (完整流程)')
+        if ($h.Count) { $items += @('檢查已註冊的電腦是否在線', '關閉某台的密碼登入 (harden)', '移除某台 PC2 的遠端存取 (teardown)') }
+        $items += '顯示目前進度 (pcx guide)'
+        $c = Read-Menu "`n要做什麼? (q 離開)" $items
+        if ($c -eq 0) { Write-Host '再見。'; return }
+        switch ($items[$c - 1]) {
+            '新增一台 PC2 (完整流程)'      { Start-WizardNewHost }
+            '檢查已註冊的電腦是否在線'      { [void](Invoke-PcxStep @('status')) }
+            '關閉某台的密碼登入 (harden)'   {
+                $n = Select-WizardHost $h
+                if ($n -and (Read-YesNo "關閉 $n 的密碼登入 (只留金鑰)?" $true)) { [void](Stop-OnErrorRequest (Invoke-PcxStep @('harden', $n))) }
+            }
+            '移除某台 PC2 的遠端存取 (teardown)' {
+                $n = Select-WizardHost $h
+                if ($n) {
+                    Write-Host "會移除 $n 上 pcx 的金鑰、防火牆規則與 SSH 設定 (依安裝前狀態還原)，並取消本機註冊。"
+                    if ((Read-Answer "確定請輸入電腦名稱 $n") -ceq $n) { [void](Stop-OnErrorRequest (Invoke-PcxStep @('teardown', $n))) }
+                    else { Write-Host '名稱不符，已取消。' }
+                }
+            }
+            '顯示目前進度 (pcx guide)'      { [void](Invoke-PcxStep @('guide')) }
+        }
+    }
+}
+
 # ---- 未帶指令 / help / guide ----------------------------------------------
 if (-not $Cmd -or $Cmd -eq 'help') {
     if ($A -and -not $GuideText.ContainsKey($A.ToLower())) {
@@ -536,6 +747,7 @@ if (-not $Cmd -or $Cmd -eq 'help') {
     Show-Guide $A; exit 0
 }
 if ($Cmd -eq 'guide') { Show-Wizard $A; exit 0 }
+if ($Cmd -eq 'wizard') { Start-Wizard; exit 0 }
 
 # ---- 非內建動詞 => 視為「pcx <名稱> "<指令>"」 -------------------------------
 if ($Cmd -notin $Verbs) { $B = $A; $A = $Cmd; $Cmd = 'run' }
@@ -547,7 +759,7 @@ switch ($Cmd) {
 'install' {
     New-Item -ItemType Directory -Force -Path $PcxDir | Out-Null
     if ((Resolve-Path $PSScriptRoot).Path -ne (Resolve-Path $PcxDir).Path) {
-        Copy-Item (Join-Path $PSScriptRoot '*.ps1'), (Join-Path $PSScriptRoot '*.sh') -Destination $PcxDir -Force
+        Copy-Item (Join-Path $PSScriptRoot '*.ps1'), (Join-Path $PSScriptRoot '*.sh'), (Join-Path $PSScriptRoot 'WIZARD.cmd') -Destination $PcxDir -Force
     }
     $npm = Join-Path $env:APPDATA 'npm'
     if (($env:Path -split ';') -contains $npm -and (Test-Path $npm)) { $shimDir = $npm } else { $shimDir = $PcxDir }

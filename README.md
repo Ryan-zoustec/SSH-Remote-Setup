@@ -5,9 +5,12 @@ PC2 只開 OpenSSH（不裝 AI、不登入帳號）。PC1 用 `pcx` 送指令，
 
 ## 內建說明與引導流程
 
+**Windows 最簡單的方式**：雙擊 `WIZARD.cmd`（或執行 `pcx wizard`）。互動精靈會一步步詢問並代為執行：安裝 pcx、選 PC2 系統與連線環境、產生安裝資料夾、提示你到 PC2 執行 `INSTALL.cmd`、輸入 IP 註冊並測試、詢問是否關閉密碼登入、寫入 `AGENTS.md`。已註冊的電腦也能從選單檢查在線、harden 或 teardown（teardown 要輸入電腦名稱確認）。精靈不會詢問或儲存任何密碼；PC2 是 Ubuntu 時，精靈會改帶你看 `pcx guide`。
+
 使用說明已內建在 `pcx.ps1` 裡，`pcx install` 之後不需要這份 README 也能查：
 
 ```powershell
+pcx wizard           # Windows 互動精靈（給人用；AI 工具中執行會被拒絕）
 pcx guide            # 引導流程：檢查目前做到哪一步（安裝 → invite → PC2 安裝 → add → 權限 → harden → agents），並印出「下一步」要執行的指令
 pcx guide pc2        # 同上，並實際檢測 pc2 是否在線
 pcx help             # 完整中文使用說明（指令速查 + 以下各節）
