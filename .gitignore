@@ -1,0 +1,18 @@
+# SSH 金鑰（私鑰/公鑰/known_hosts）絕不提交
+id_*
+*.pem
+*.key
+*.ppk
+known_hosts*
+authorized_keys
+
+# pcx 產生的部署套件與發佈產物
+pcx-pc2-*/
+*.zip
+*.sha256
+
+# 系統/編輯器雜檔
+Thumbs.db
+.DS_Store
+*.log
+.vscode/
