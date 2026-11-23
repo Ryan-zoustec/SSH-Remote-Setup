@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
   一鍵還原 setup-remote.ps1 的所有變更 (依 pcx-state.json 回到安裝前的狀態)：
   移除 pcx 金鑰、還原防火牆與密碼登入設定、還原預設 shell，

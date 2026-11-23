@@ -789,7 +789,11 @@ switch ($Cmd) {
         $utf8 = New-Object Text.UTF8Encoding $false
         [IO.File]::WriteAllText((Join-Path $dir 'pcx.pub'), "$pub`n", $utf8)
         if ($os -eq 'windows') {
-            Copy-Item (Join-Path $PSScriptRoot 'setup-remote.ps1'), (Join-Path $PSScriptRoot 'remove-remote.ps1') -Destination $dir -Force
+            # PC2 用的是 Windows PowerShell 5.1：無 BOM 的 UTF-8 會被當成 ANSI (cp950) 讀取，中文吃掉引號導致語法錯誤，所以一律寫成 UTF-8 with BOM
+            $bom = New-Object Text.UTF8Encoding $true
+            foreach ($f in 'setup-remote.ps1', 'remove-remote.ps1') {
+                [IO.File]::WriteAllText((Join-Path $dir $f), (Get-Content (Join-Path $PSScriptRoot $f) -Raw -Encoding utf8), $bom)
+            }
             $flag = if ($DisablePassword) { ' -DisablePasswordLogin' } else { '' }
             $bat = @'
 @echo off
@@ -859,7 +863,7 @@ if ($Remove) {
 '@
         $content = $tpl.Replace('@@B64@@', $b64).Replace('@@RM64@@', $rm64).Replace('@@KEY@@', $pub).Replace('@@ALLOW@@', $AllowFrom).Replace('@@FLAG@@', $flag)
         if (-not $Out) { $Out = 'pcx-setup-windows.ps1' }
-        Set-Content -LiteralPath $Out $content -Encoding utf8NoBOM
+        Set-Content -LiteralPath $Out $content -Encoding utf8BOM   # Windows PowerShell 5.1 需要 BOM
     } else {
         $b64  = ConvertTo-B64 (Join-Path $PSScriptRoot 'setup-remote.sh') -Lf
         $rm64 = ConvertTo-B64 (Join-Path $PSScriptRoot 'remove-remote.sh') -Lf

@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
   在「被管理的 Windows 電腦」上執行：啟用 OpenSSH Server，只允許金鑰登入，並限制連入來源。
   會把「動手前的狀態」記錄到 %ProgramData%\ssh\pcx-state.json，remove-remote.ps1 依此完整還原。
