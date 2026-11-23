@@ -25,6 +25,8 @@
 | `AI-GUIDE.md` | — | 給 AI 的逐步指引與規則 |
 | `DEVELOPMENT.md` | — | 本文件 |
 
+使用說明內建於 `pcx.ps1`（`$GuideText` 各節，與 README / AI-GUIDE 內容一致；改文件時要一併更新）：`pcx help [主題]` 印出完整說明，`pcx guide [名稱]` 是唯讀的引導流程，依 PC1 環境、全域指令、金鑰、`hosts.json`（含 `admin`、`hardened` 欄位；`hardened` 由 `pcx harden` 驗證成功後寫入）與 `AGENTS.md` 判斷進度並印出下一步。
+
 `pcx invite` 會把 `setup-*` / `remove-*` 原樣複製成「給 PC2 的明文資料夾」（`pcx-pc2-windows` 或 `pcx-pc2-ubuntu`，內含 `pcx.pub`、`INSTALL.cmd` / `install.sh`、`REMOVE.cmd` / `remove.sh`、`README.txt`）。`-SingleFile` 才會產生 base64 內嵌的單一檔案。
 
 ## 3. 架構與資料流

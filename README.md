@@ -3,6 +3,19 @@
 PC2 只開 OpenSSH（不裝 AI、不登入帳號）。PC1 用 `pcx` 送指令，讀回完整輸出與結束碼。
 區網、網線直連、VPN、雲端 VM、跳板機都用同一套指令。
 
+## 內建說明與引導流程
+
+使用說明已內建在 `pcx.ps1` 裡，`pcx install` 之後不需要這份 README 也能查：
+
+```powershell
+pcx guide            # 引導流程：檢查目前做到哪一步（安裝 → invite → PC2 安裝 → add → 權限 → harden → agents），並印出「下一步」要執行的指令
+pcx guide pc2        # 同上，並實際檢測 pc2 是否在線
+pcx help             # 完整中文使用說明（指令速查 + 以下各節）
+pcx help errors      # 只看某一節；主題：setup admin errors env daily remove security ai notes
+```
+
+`pcx guide` 只讀取狀態、不會詢問輸入也不會修改任何東西，AI CLI 也能安全執行。
+
 ## 設定（約 3 步）
 
 PC1（需要 PowerShell 7）：

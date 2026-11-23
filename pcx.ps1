@@ -2,6 +2,8 @@
 <#
   pcx - 在 PC1 上用一個指令管理並操作遠端電腦 (Windows / Ubuntu / 雲端 VM)。
 
+  pcx guide [名稱]                     引導流程：檢查目前做到哪一步，並告訴你下一個要執行的指令 (從這裡開始)
+  pcx help [主題]                      完整中文使用說明；主題: setup admin errors env daily remove security ai notes
   pcx install                          安裝成全域指令 (只需一次)
   pcx invite windows|ubuntu            產生「給 PC2 的明文資料夾」(腳本 + 你的公鑰，無編碼/混淆；加 -SingleFile 改為單一檔案)
   pcx add <名稱> <user@主機>           註冊一台電腦並測試連線 (同時檢查遠端是否具管理員/sudo 權限)
@@ -56,7 +58,7 @@ $HostsFile  = Join-Path $PcxDir 'hosts.json'
 $SshDir     = Join-Path $HOME '.ssh'
 $SshConfig  = Join-Path $SshDir 'config'
 $DefaultKey = Join-Path $SshDir 'id_ed25519_pcx'
-$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'teardown', 'uninstall', 'invite', 'agents', 'help'
+$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide'
 
 # ---------------------------------------------------------------------------
 # errorRequest：pcx 無法自行解決時，輸出固定格式的區塊，請使用者(或 AI 轉告使用者)處理
@@ -263,8 +265,277 @@ function Show-Usage {
     if ($t -match '(?s)<#(.*?)#>') { $Matches[1].TrimEnd() }
 }
 
-# ---- 未帶指令 / help -------------------------------------------------------
-if (-not $Cmd -or $Cmd -eq 'help') { Show-Usage; exit 0 }
+# ---------------------------------------------------------------------------
+# 內建使用說明 (與 README.md / AI-GUIDE.md 內容一致；不依賴外部檔案，pcx install 後也能用)
+#   pcx help            指令速查 + 完整使用說明
+#   pcx help <主題>     只看某一節；pcx guide 與 pcx help 相同
+# ---------------------------------------------------------------------------
+$GuideOrder = 'setup', 'admin', 'errors', 'env', 'daily', 'remove', 'security', 'ai', 'notes'
+$GuideTitle = [ordered]@{
+    setup    = '設定流程 (約 3 步)'
+    admin    = '管理員 / root 權限'
+    errors   = '遇到無法自行解決的狀況：errorRequest'
+    env      = '各種連線環境與參數'
+    daily    = '日常操作'
+    remove   = '一鍵移除'
+    security = '安全性與 OpenSSH 更新'
+    ai       = '給 AI 的操作守則'
+    notes    = '注意事項'
+}
+$GuideText = @{
+setup = @'
+PC1 = 你正在用的電腦 (Windows，需要 PowerShell 7 與 OpenSSH 客戶端)。
+PC2 = 要被操作的電腦 (Windows 或 Ubuntu)。PC2 只開 OpenSSH，不裝 AI、不登入帳號。
+
+1) PC1：安裝並產生給 PC2 的安裝資料夾
+     .\pcx.ps1 install            一次性；重開終端機後任何地方都能用 pcx
+                                  (目前這個終端機請用 & <資料夾>\pcx.ps1 代替 pcx)
+     pcx invite windows           或 pcx invite ubuntu
+   會產生明文資料夾 pcx-pc2-windows / pcx-pc2-ubuntu (腳本 + 你的公鑰 + README.txt，沒有任何編碼)。
+   加 -SingleFile 改產生單一檔案；-Out <名稱> 指定輸出名稱。
+
+2) PC2：把整個資料夾複製過去 (隨身碟、雲端硬碟、scp 皆可) 後執行
+     Windows：對 INSTALL.cmd 按右鍵「以系統管理員身分執行」
+     Ubuntu ：bash install.sh
+   畫面最後會印出 PC2 的 IP。
+
+3) PC1：註冊並測試
+     pcx add pc2 admin@192.168.1.50   註冊並測試連線，同時檢查 PC2 有沒有管理員/sudo 權限
+     pcx pc2 "hostname"               回傳 PC2 名稱與 [exit code: 0] 就完成了
+     pcx harden pc2                   建議：確認金鑰可用後，關閉 PC2 的密碼登入
+     pcx agents                       (選用) 在目前資料夾的 AGENTS.md 寫入「請用 pcx 操作遠端」
+
+雲端 VM 若已有 SSH 與 .pem 金鑰，可跳過 1、2 步：pcx add vm1 ubuntu@公網IP -Key C:\keys\vm.pem
+'@
+admin = @'
+很多操作需要管理員權限 (裝服務、改設定、重啟服務)。pcx add 會檢查並記錄，pcx list 看得到。
+
+  Windows：用 PC2 的「管理員帳號」登入，SSH 工作階段就是已提升的管理員權限，不會有 UAC 提示。
+           一般使用者帳號無法透過 SSH 提升權限，這種情況 pcx 會提出 ADMIN_REQUIRED / NO_ADMIN。
+  Ubuntu ：SSH 是非互動式，sudo 要密碼就會失敗。兩種做法：
+           (1) 產生安裝資料夾時加 -PasswordlessSudo (授權免密碼 sudo，等同 root，移除時自動撤銷)
+           (2) 不加，需要 root 的操作請自己在 PC2 做。
+           AI 一律用 sudo -n，不會也不應該取得你的密碼。
+'@
+errors = @'
+pcx 與安裝腳本遇到自己解決不了的問題 (沒權限、連不上、金鑰被拒、主機金鑰變更、沙盒擋網路、
+Windows Update 失敗、apt 被鎖住等)，會印出固定格式的區塊：
+
+  [errorRequest:AUTH_REJECTED]
+    問題: ...
+    需要: ...
+
+請照「需要」欄位處理後再繼續；AI 看到時會停下來把內容轉告你。
+([hint:...] 只是提示，例如 [hint:ENCODING] 代表輸出亂碼，可加 -Encoding 950 重試。)
+
+常見代碼：
+  HOST_NOT_REGISTERED     還沒 pcx add，或執行身分 (AI 沙盒) 看不到 ~\.pcx
+  AUTH_REJECTED           PC2 拒絕金鑰：沒在 PC2 執行「這台 PC1 產生」的安裝檔、使用者名稱錯、或非管理員帳號
+  UNREACHABLE             連不到 (關機/睡眠、IP 變了、不同網段、訪客 Wi-Fi 隔離、雲端安全群組)
+  SSH_NOT_RUNNING         主機在線但 sshd 沒跑或埠不對 (重新執行安裝檔，或 -Port 重新註冊)
+  DNS_FAILED              主機名稱解析不到，改用 IP
+  HOSTKEY_CHANGED         PC2 主機金鑰變了 (重灌/換機/被冒充)；確認後 ssh-keygen -R <IP>
+  KEY_UNREADABLE          讀不到私鑰 (權限、檔案不存在、沙盒看不到使用者資料夾)
+  NETWORK_BLOCKED         本機擋了連線 (AI 沙盒、防火牆、防毒)
+  SSH_CLIENT_MISSING      PC1 沒有 ssh (設定 > 選用功能 > OpenSSH 用戶端)
+  ADMIN_REQUIRED          Windows 操作需要管理員帳號
+  SUDO_PASSWORD_REQUIRED  Ubuntu 的 sudo 要密碼 (見 pcx help admin)
+  NO_ADMIN                註冊的帳號沒有管理員/免密碼 sudo
+  RUN_TIMEOUT             遠端指令超過 -RunTimeout 秒 (多半在等輸入；改非互動寫法或調高逾時)
+  HARDEN_*                關閉密碼登入的前檢/執行/驗證失敗
+  TEARDOWN_FAILED / UNINSTALL_PARTIAL   遠端移除失敗
+  OPENSSH_INSTALL_FAILED / APT_FAILED / NO_SYSTEMD / NO_IP_ADDRESS   PC2 安裝腳本的問題
+'@
+env = @'
+  區網                預設就是區網 (防火牆只允許 LocalSubnet)
+  網線直連            兩邊手動設同網段固定 IP (例如 192.168.50.1 / .2)，其餘相同
+  VPN (Tailscale 等)  pcx invite windows -AllowFrom 100.64.0.0/10；pcx add 用 VPN 的 IP 或名稱
+  指定來源網段        pcx invite ubuntu -AllowFrom 192.168.1.0/24
+  雲端 VM             pcx add vm1 ubuntu@公網IP -Key C:\keys\vm.pem  (通常不需要 invite)
+  經跳板機            pcx add pc2 admin@內網IP -Jump user@跳板機
+  非 22 埠            加 -Port 2222
+
+雲端不要把 22 埠對全網際網路開放：安全群組只允許你的固定 IP，或改走 VPN。
+
+參數一覽：
+  add       -Port 22  -Key <私鑰>  -Jump <user@跳板機>
+  invite    -AllowFrom <LocalSubnet | 網段 | 100.64.0.0/10 | Any>  -DisablePassword  -UpgradeServer
+            -PasswordlessSudo (僅 Ubuntu，等同 root)  -SingleFile  -Out <名稱>
+  執行      -RunTimeout 120 (遠端指令總逾時秒數)  -Timeout 60 (連線逾時)  -Encoding utf-8 (亂碼改 950)
+  status/clean   -Timeout 5  -IncludeOffline  -Yes
+  teardown/uninstall   -UninstallServer  -All  -Yes (不詢問)  -Force (遠端失敗也繼續清本機)
+'@
+daily = @'
+  pcx pc2 "Get-Service sshd"              Windows 遠端用 PowerShell 語法；Ubuntu 用 bash
+  pcx pc2 -File .\fix.ps1                 在 PC2 執行本機腳本 (遠端是 linux 則用 .sh)
+  pcx put pc2 .\app.zip C:/temp/app.zip   上傳 (Windows 遠端路徑用 C:/temp/x 形式)
+  pcx get pc2 /var/log/syslog .\syslog    下載
+  pcx list                                已註冊的電腦、作業系統與 admin/sudo 狀態
+  pcx status [名稱]                       平行檢測是否存活 (約 5 秒內)：在線 / 金鑰被拒 / SSH 未開 / 離線
+  pcx clean                               清理「遠端存取已不存在」的註冊；離線的預設保留，確定不用再加 -IncludeOffline
+  pcx remove <名稱>                       只取消本機註冊 (不動 PC2)
+  pcx agents                              在目前資料夾的 AGENTS.md 寫入給 AI 的用法
+
+輸出最後一行 [exit code: N] 是遠端指令的結束碼，非 0 代表失敗。
+遠端指令預設最多 120 秒 (-RunTimeout 可調)，stdin 會被關閉，等輸入的指令不會卡住而是回報逾時；
+所以請用非互動寫法 (apt -y、sudo -n)。中文 Windows 輸出若亂碼，加 -Encoding 950。
+'@
+remove = @'
+  只移除某台 PC2 的遠端存取          pcx teardown pc2
+  全部清乾淨 (所有 PC2 + PC1)        pcx uninstall -All -Yes
+  只清 PC1，不動 PC2                 pcx uninstall -Yes
+  連 OpenSSH Server 也一併卸載       加 -UninstallServer
+  PC1 已不在手邊，直接在 PC2 移除    Windows：資料夾裡的 REMOVE.cmd (右鍵以系統管理員身分執行)
+                                     Ubuntu ：bash remove.sh
+
+PC2 依安裝時記下的「原本狀態」還原：只移除 pcx 自己的金鑰 (其他金鑰保留)、還原防火牆規則與密碼登入設定、
+還原預設 shell；SSH 若是 pcx 裝的或原本沒在執行就停用，原本就在用的雲端 VM 不會被關掉。
+PC1 會刪除 pcx 指令、~\.pcx、專用金鑰 id_ed25519_pcx、~/.ssh/config 裡 pcx 的區塊。
+'@
+security = @'
+- 密碼登入在安裝時維持原樣 (避免金鑰沒生效時把自己鎖在外面)。pcx add 確認金鑰可用後，執行
+  pcx harden <名稱> 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證一次。
+- 預設只開放區網來源。不用時執行 pcx teardown <名稱>，SSH 就不會一直開著，這是最有效的防護。
+- 腳本不會自動升級 OpenSSH，只會在安裝結束時印出版本；Ubuntu 若有可用更新會提醒。
+    Ubuntu ：評估後自行 sudo apt install --only-upgrade openssh-server；
+             或 pcx invite ubuntu -UpgradeServer (非互動、保留設定檔，但會重啟 sshd，可能連帶升級 openssl/libc)。
+    Windows：OpenSSH 由 Windows Update 維護，請定期更新 Windows。
+- 發現 OpenSSH 重大漏洞時，請對照官方公告確認影響範圍。
+'@
+ai = @'
+(完整版見 AI-GUIDE.md；以下為重點)
+- 操作 PC2 一律用 pcx <名稱> "<指令>"，不要改用其他連線方式；先 pcx status <名稱> 確認在線。
+- 讀最後一行 [exit code: N]，非 0 就是失敗，不可假裝成功。
+- 出現 [errorRequest:代碼]：立刻停止，把「問題」與「需要」原樣轉告使用者，等回覆後才繼續；
+  不要猜原因、不要繞過、不要重複重試。[hint:...] 可自行依提示調整。
+- 不輸入、猜測或儲存任何密碼；不讀取或顯示私鑰 (只有 .pub 可以顯示)。需要 root 時用 sudo -n。
+- PC2 的安裝必須由使用者自己在 PC2 執行；連線前先問清楚：PC2 作業系統、連線環境、IP 與使用者名稱、
+  是否為已有 .pem 的雲端 VM。
+- 不要用 -AllowFrom Any、-PasswordlessSudo，除非使用者明確要求並了解風險。
+- 會修改設定、刪除檔案、重啟服務或關機的指令，先向使用者確認；pcx harden / teardown / uninstall 也要先取得同意。
+- 先唯讀診斷，再提修復建議；修改前先備份，修改後立刻驗證。回報：執行了什麼、結束碼、關鍵輸出、下一步建議。
+- AI 沙盒 (例如 Codex) 可能擋網路或 ssh，請使用者放寬沙盒或核准，不要繞過。
+'@
+notes = @'
+- 登入後的權限：Windows 是管理員，Ubuntu 是 invite 時使用的帳號 (加了 -PasswordlessSudo 就等同 root)。
+  私鑰外洩就等於 PC2 被控制，請妥善保管。專用金鑰沒有加密碼 (為了免輸入)，跨網路使用建議搭配 VPN 或來源限制。
+- 網線直連沒設固定 IP 時，系統會自動配 169.254.x.x；安裝完成畫面會標註，建議改設固定 IP。
+- Windows PC2 的 SSH 預設 shell 會設成 PowerShell 7 (沒有就用 Windows PowerShell)，遠端指令用 PowerShell 語法。
+- 設定檔位置：已註冊電腦 ~\.pcx\hosts.json；連線設定 ~\.ssh\config 中的 # >>> pcx <名稱> >>> 區塊。
+'@
+}
+function Show-Guide([string]$topic) {
+    if ($topic) {
+        $t = $topic.ToLower()
+        "== $($GuideTitle[$t]) ==`n"
+        $GuideText[$t].TrimEnd()
+        return
+    }
+    'pcx - 讓 PC1 (含 AI CLI) 透過 SSH 操作遠端電腦 PC2 (Windows / Ubuntu / 雲端 VM)'
+    ''
+    '== 指令速查 =='
+    Show-Usage
+    foreach ($k in $GuideOrder) {
+        ''
+        "== $($GuideTitle[$k])  (pcx help $k) =="
+        ''
+        $GuideText[$k].TrimEnd()
+    }
+    ''
+    "只看某一節: pcx help <主題>   主題: $($GuideOrder -join ', ')"
+}
+
+# ---------------------------------------------------------------------------
+# pcx guide：引導流程。偵測目前進度，把各功能串成一條路線並指出「下一步」要執行的指令。
+# 不會詢問輸入、不會自動修改任何東西 (AI CLI 也能安全執行)；加名稱時會實際檢測該台連線。
+# ---------------------------------------------------------------------------
+function Show-Wizard([string]$name) {
+    $ok = '[v]'; $no = '[ ]'
+    $mark = { param($cond) if ($cond) { $ok } else { $no } }
+    # 只記下第一個未完成步驟的指令，作為「下一步」
+    $setNext = { param($cmd, $why) if (-not $script:wizNext) { $script:wizNext = @($cmd, $why) } }
+    $script:wizNext = $null
+
+    'pcx 引導流程 (pcx guide [名稱])  —  [v] 已完成  [ ] 尚未完成'
+    ''
+    # 步驟 1：PC1 環境
+    $psOk  = $PSVersionTable.PSVersion.Major -ge 7
+    $sshOk = [bool](Get-Command ssh -ErrorAction SilentlyContinue)
+    "$(& $mark ($psOk -and $sshOk)) 1. PC1 環境：PowerShell $($PSVersionTable.PSVersion) / OpenSSH 客戶端 $(if ($sshOk) { '有' } else { '沒有' })"
+    if (-not $sshOk) { & $setNext '安裝 OpenSSH 用戶端 (設定 > 應用程式 > 選用功能 > 新增功能)，重開終端機' '沒有 ssh 無法連線' }
+
+    # 步驟 2：安裝成全域指令
+    $shimOk = (Test-Path (Join-Path $env:APPDATA 'npm\pcx.cmd')) -or (Test-Path (Join-Path $PcxDir 'pcx.cmd'))
+    $instOk = $shimOk -and (Test-Path (Join-Path $PcxDir 'pcx.ps1'))
+    "$(& $mark $instOk) 2. 安裝 pcx 全域指令 (pcx install)"
+    if (-not $instOk) { & $setNext "& `"$(Join-Path $PSScriptRoot 'pcx.ps1')`" install" '之後任何資料夾都能直接打 pcx (需重開終端機)' }
+
+    # 步驟 3：產生給 PC2 的安裝資料夾
+    $keyOk  = Test-Path $DefaultKey
+    $kits   = @(Get-ChildItem -Directory -Filter 'pcx-pc2-*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    $h      = Get-Hosts
+    "$(& $mark ($keyOk -or $h.Count)) 3. 產生給 PC2 的安裝資料夾 (pcx invite windows|ubuntu)$(if ($kits) { "  目前資料夾已有: $($kits -join ', ')" })"
+    if (-not $keyOk -and $h.Count -eq 0) { & $setNext 'pcx invite windows   (或 pcx invite ubuntu；VPN 加 -AllowFrom 100.64.0.0/10，見 pcx help env)' '產生明文資料夾給 PC2；雲端 VM 已有 .pem 可跳過，直接 pcx add ... -Key <pem>' }
+
+    # 步驟 4：PC2 執行安裝 (只能由使用者在 PC2 做)
+    "$(& $mark $h.Count) 4. 在 PC2 執行安裝：Windows 右鍵 INSTALL.cmd「以系統管理員身分執行」/ Ubuntu bash install.sh"
+    if ($h.Count -eq 0) { & $setNext '把 pcx-pc2-* 資料夾複製到 PC2 並執行安裝 (需由你在 PC2 操作)，記下畫面最後印出的 IP' 'PC2 要先開 SSH 並授權 PC1 的金鑰' }
+
+    # 步驟 5：註冊並測試
+    "$(& $mark $h.Count) 5. 註冊並測試連線 (pcx add <名稱> <user@IP>)  已註冊 $($h.Count) 台"
+    foreach ($k in ($h.Keys | Sort-Object)) {
+        $v = $h[$k]
+        "      - {0,-14} {1,-8} 管理員/sudo: {2,-4} 密碼登入: {3}" -f $k, $v.os, $(if ($v.admin) { '有' } else { '沒有' }), $(if ($v.hardened) { '已關閉' } else { '未關閉' })
+    }
+    if ($h.Count -eq 0) { & $setNext 'pcx add pc2 <使用者>@<PC2 的 IP>   (非 22 埠 -Port N；跳板機 -Jump user@host)' '註冊後會自動測試連線並檢查管理員/sudo 權限' }
+
+    # 指定名稱：實際檢測
+    $targets = if ($name) { Assert-Host $name | Out-Null; @($name) } else { @($h.Keys | Sort-Object) }
+    if ($name) {
+        Assert-Ssh
+        $res = Test-Hosts @($name) 5
+        $st = $res[0].State
+        "      檢測 ${name}: $($StateLabel[$st]) ($($res[0].Ms) ms)"
+        if ($st -ne 'online') { & $setNext "pcx status $name" "$name 目前不在線；請確認 PC2 開機、IP 未變、在同一網路 (詳見 pcx help errors)" }
+    }
+
+    # 步驟 6：權限
+    $noAdmin = @($targets | Where-Object { -not $h[$_].admin })
+    "$(& $mark ($h.Count -and -not $noAdmin.Count)) 6. 管理員 / sudo 權限$(if ($noAdmin.Count) { "  沒有: $($noAdmin -join ', ')" })"
+    if ($noAdmin.Count) { & $setNext "需要管理員操作時：Windows 改用管理員帳號重新 pcx add；Ubuntu 見 pcx help admin" "$($noAdmin -join ', ') 不能做裝服務/改設定/harden/teardown；只做一般操作可略過此步" }
+
+    # 步驟 7：關閉密碼登入
+    $soft = @($targets | Where-Object { -not $h[$_].hardened })
+    "$(& $mark ($h.Count -and -not $soft.Count)) 7. 關閉密碼登入，只留金鑰 (pcx harden <名稱>)$(if ($soft.Count) { "  未關閉: $($soft -join ', ')" })"
+    if ($soft.Count) { & $setNext "pcx harden $($soft[0])" '確認金鑰可用後才動手，事後再驗證一次 (見 pcx help security)' }
+
+    # 步驟 8：讓 AI 知道怎麼用
+    $agentsOk = (Test-Path 'AGENTS.md') -and ((Get-Content 'AGENTS.md' -Raw) -match 'pcx')
+    "$(& $mark $agentsOk) 8. (選用) 在目前資料夾的 AGENTS.md 寫入 AI 用法 (pcx agents)"
+
+    ''
+    '日常操作：pcx <名稱> "<指令>"、pcx <名稱> -File 腳本、pcx put/get、pcx status、pcx list   (pcx help daily)'
+    '用完收尾：pcx teardown <名稱> 移除某台；pcx uninstall -All -Yes 全部清乾淨          (pcx help remove)'
+    '遇到 [errorRequest:代碼]：照「需要」處理後再繼續                                   (pcx help errors)'
+    ''
+    if ($script:wizNext) {
+        "下一步: $($script:wizNext[0])"
+        "  原因: $($script:wizNext[1])"
+    } elseif (-not $agentsOk -and $h.Count) {
+        '下一步: (選用) pcx agents，或直接開始使用 pcx <名稱> "<指令>"'
+    } else {
+        '設定已全部完成，可以直接使用 pcx <名稱> "<指令>"。'
+    }
+}
+
+# ---- 未帶指令 / help / guide ----------------------------------------------
+if (-not $Cmd -or $Cmd -eq 'help') {
+    if ($A -and -not $GuideText.ContainsKey($A.ToLower())) {
+        Write-Host "沒有這個主題: $A"; Write-Host "可用主題: $($GuideOrder -join ', ')"; exit 1
+    }
+    Show-Guide $A; exit 0
+}
+if ($Cmd -eq 'guide') { Show-Wizard $A; exit 0 }
 
 # ---- 非內建動詞 => 視為「pcx <名稱> "<指令>"」 -------------------------------
 if ($Cmd -notin $Verbs) { $B = $A; $A = $Cmd; $Cmd = 'run' }
@@ -544,7 +815,10 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
     # 確認金鑰仍可登入 (sshd 重啟需要幾秒)
     Start-Sleep -Seconds 8
     $post = Invoke-Capture -CmdArgs ($o + @('echo pcx-ok')) -TimeoutSec ($Timeout + 15)
-    if ($post.Out -match 'pcx-ok') { "完成：$name 已只允許金鑰登入，並確認金鑰登入仍可使用。" }
+    if ($post.Out -match 'pcx-ok') {
+        $h = Get-Hosts; if ($h.ContainsKey($name)) { $h[$name].hardened = $true; Save-Hosts $h }
+        "完成：$name 已只允許金鑰登入，並確認金鑰登入仍可使用。"
+    }
     else {
         Write-ErrorRequest 'HARDEN_VERIFY_FAILED' "已送出設定，但重新連線 $name 失敗 (sshd 可能仍在重啟，或設定有誤)。" "請稍後執行 pcx status $name 確認；若持續連不上，需要到 $name 本機把 sshd_config 的 PasswordAuthentication 改回 yes (備份在 sshd_config.pcx-bak 或 99-remote.conf) 並重啟 SSH 服務。"
         exit 1
