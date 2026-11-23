@@ -40,6 +40,15 @@ if (-not $state) {
             Remove-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -ErrorAction SilentlyContinue
         }
     }
+    # 3b. 還原 LocalAccountTokenFilterPolicy (安裝前沒有這個值就刪除)
+    if ($state.tokenFilterSet) {
+        $polPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+        if ($null -ne $state.prevTokenFilter) {
+            New-ItemProperty -Path $polPath -Name LocalAccountTokenFilterPolicy -Value ([int]$state.prevTokenFilter) -PropertyType DWord -Force | Out-Null
+        } else {
+            Remove-ItemProperty -Path $polPath -Name LocalAccountTokenFilterPolicy -ErrorAction SilentlyContinue
+        }
+    }
     # 4. 還原防火牆
     if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) {
         if ($state.firewallExisted) {
@@ -62,7 +71,7 @@ if (-not $state) {
         if ($cap.State -eq 'Installed') { Remove-WindowsCapability -Online -Name $cap.Name | Out-Null }
     }
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-    Write-Host '已還原：金鑰、防火牆、SSH 設定與服務都回到安裝前的狀態。'
+    Write-Host '已還原：金鑰、防火牆、SSH 設定、管理員遠端權限原則與服務都回到安裝前的狀態。'
 }
 
 if ($Delayed) {

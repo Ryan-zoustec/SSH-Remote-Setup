@@ -51,7 +51,7 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 | PC1 `~\.pcx\` | `pcx install` 複製的腳本；`pcx.cmd` 捷徑（優先放 `%APPDATA%\npm`，否則放此處並加入使用者 PATH） |
 | PC1 `~/.ssh/config` | 以 `# >>> pcx 名稱 >>>` 到 `# <<< pcx 名稱 <<<` 包住的區塊 |
 | PC1 `~/.ssh/id_ed25519_pcx(.pub)` | 專用金鑰（無密碼） |
-| PC2 Windows `%ProgramData%\ssh\pcx-state.json` | `installedServer, wasRunning, firewallExisted, prevRemoteAddress, prevEnabled, prevDefaultShell, setDefaultShell, passwordDisabled` |
+| PC2 Windows `%ProgramData%\ssh\pcx-state.json` | `installedServer, wasRunning, firewallExisted, prevRemoteAddress, prevEnabled, prevDefaultShell, setDefaultShell, passwordDisabled, tokenFilterSet, prevTokenFilter` (後兩者：LocalAccountTokenFilterPolicy 是否由 pcx 設定、原值；原本不存在記為 null，移除時刪除) |
 | PC2 Windows 其他 | `administrators_authorized_keys`、防火牆規則 `OpenSSH-Server-In-TCP`、`sshd_config.pcx-bak`、暫時的排程工作 `pcx-remove` / `pcx-restart` |
 | PC2 Ubuntu `/etc/ssh/pcx-state` | `installed_server`、`was_active`、`ufw=規則`、`password_disabled`、`sudoers` |
 | PC2 Ubuntu 其他 | `~/.ssh/authorized_keys`、`/etc/ssh/sshd_config.d/99-remote.conf`、`/etc/sudoers.d/pcx` |
@@ -110,6 +110,8 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 - 公鑰不是機密，zip 與安裝資料夾裡只有公鑰。
 - 2026-11 的 OpenSSH 漏洞 CVE-2026-123158（sshhole）：依搜尋結果，主要影響 musl 且無 PAM 的 Linux（如 Alpine），緩解方式為關閉密碼認證；本工具的 `harden` 對應此緩解。**以上來自二手報導，未對照官方公告逐項驗證**。
 - 防毒/EDR：開啟 SSH、改防火牆、以 SYSTEM 排程工作執行腳本等行為，在管理嚴格的環境仍可能被攔截或通報，需先取得 IT 同意。
+
+- Windows PC2 以本機管理員帳號安裝時設定 `LocalAccountTokenFilterPolicy=1`，否則 UAC 遠端限制會讓 SSH 拿到降級 token（`pcx add` 判為 NO_ADMIN）。代價：該機所有本機管理員帳號的網路登入（SMB/WinRM 等）都是完整權限；網域帳號不受此原則影響故不設定。
 
 ## 8. 已知限制
 

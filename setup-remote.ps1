@@ -97,6 +97,22 @@ New-Item -Path 'HKLM:\SOFTWARE\OpenSSH' -Force | Out-Null
 New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value $shell -PropertyType String -Force | Out-Null
 $state.setDefaultShell = $true
 
+# 4b. 本機管理員帳號：讓 SSH 登入拿到完整 (已提升) 的管理員權限
+#     Windows 預設會把「本機帳號的遠端登入」降成一般權限 (UAC 遠端限制)，設 LocalAccountTokenFilterPolicy=1 解除。
+#     安全影響：此電腦所有本機管理員帳號的遠端登入 (SSH、SMB、WinRM 等) 都會是完整管理員權限。原值記入狀態檔，移除時還原。
+$polPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+if ($env:USERDOMAIN -eq $env:COMPUTERNAME) {
+    if (-not ($state.PSObject.Properties.Name -contains 'tokenFilterSet') -or -not $state.tokenFilterSet) {
+        $prop = Get-ItemProperty -Path $polPath -Name LocalAccountTokenFilterPolicy -ErrorAction SilentlyContinue
+        $prev = if ($prop) { [int]$prop.LocalAccountTokenFilterPolicy } else { $null }
+        $state | Add-Member -Force -NotePropertyName prevTokenFilter -NotePropertyValue $prev
+        $state | Add-Member -Force -NotePropertyName tokenFilterSet  -NotePropertyValue $true
+    }
+    New-ItemProperty -Path $polPath -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force | Out-Null
+    Write-Host '已設定 LocalAccountTokenFilterPolicy=1：本機管理員帳號經 SSH 登入時具有完整管理員權限 (移除時會還原)。'
+    Write-Host '  注意：這也適用於其他遠端登入方式 (SMB/WinRM)，請確保本機管理員帳號都有強密碼。' -ForegroundColor Yellow
+}
+
 # 5. 可選：關閉密碼登入
 if ($DisablePasswordLogin) {
     $cfg = Join-Path $sshDir 'sshd_config'

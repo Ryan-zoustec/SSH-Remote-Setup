@@ -316,6 +316,8 @@ admin = @'
 很多操作需要管理員權限 (裝服務、改設定、重啟服務)。pcx add 會檢查並記錄，pcx list 看得到。
 
   Windows：用 PC2 的「管理員帳號」登入，SSH 工作階段就是已提升的管理員權限，不會有 UAC 提示。
+           安裝時若是本機管理員帳號，會設定 LocalAccountTokenFilterPolicy=1 (解除 UAC 對本機帳號遠端登入的限制)，
+           否則 SSH 登入只會拿到降級的權限；原值會記錄，移除時還原。注意：這也讓 SMB/WinRM 等遠端登入取得完整管理員權限。
            一般使用者帳號無法透過 SSH 提升權限，這種情況 pcx 會提出 ADMIN_REQUIRED / NO_ADMIN。
   Ubuntu ：SSH 是非互動式，sudo 要密碼就會失敗。兩種做法：
            (1) 產生安裝資料夾時加 -PasswordlessSudo (授權免密碼 sudo，等同 root，移除時自動撤銷)
@@ -400,6 +402,8 @@ PC1 會刪除 pcx 指令、~\.pcx、專用金鑰 id_ed25519_pcx、~/.ssh/config 
 security = @'
 - 密碼登入在安裝時維持原樣 (避免金鑰沒生效時把自己鎖在外面)。pcx add 確認金鑰可用後，執行
   pcx harden <名稱> 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證一次。
+- Windows PC2 會設定 LocalAccountTokenFilterPolicy=1，本機管理員帳號的所有遠端登入 (含 SMB/WinRM) 都是完整管理員權限；
+  請確保本機管理員帳號都有強密碼，用完 pcx teardown 或 REMOVE.cmd 會還原成原值。
 - 預設只開放區網來源。不用時執行 pcx teardown <名稱>，SSH 就不會一直開著，這是最有效的防護。
 - 腳本不會自動升級 OpenSSH，只會在安裝結束時印出版本；Ubuntu 若有可用更新會提醒。
     Ubuntu ：評估後自行 sudo apt install --only-upgrade openssh-server；
@@ -830,7 +834,8 @@ pause
             $how = '在 PC2 執行: bash install.sh；要移除就執行: bash remove.sh。'
         }
         $pwLine = if ($DisablePassword) { '已關閉密碼登入，只能用金鑰登入' } else { '密碼登入維持原樣；確認金鑰可用後，在 PC1 執行 pcx harden <名稱> 再關閉密碼登入' }
-        $sudoLine = if ($PasswordlessSudo -and $os -eq 'ubuntu') { "`n  4. 授權此帳號免密碼 sudo (等同 root)；移除時會一併撤銷" } else { '' }
+        $sudoLine = if ($PasswordlessSudo -and $os -eq 'ubuntu') { "`n  4. 授權此帳號免密碼 sudo (等同 root)；移除時會一併撤銷" }
+                    elseif ($os -eq 'windows') { "`n  4. 本機管理員帳號：設定 LocalAccountTokenFilterPolicy=1，讓 SSH 登入取得完整管理員權限 (也適用 SMB/WinRM 等遠端登入；移除時還原原值)" } else { '' }
         $readme = @"
 這個資料夾是由 pcx 產生，用來讓另一台電腦 (PC1) 透過 SSH 管理這台電腦。內容全部是明文，可直接用文字編輯器檢視。
 
@@ -950,7 +955,7 @@ rm -f "$tmp"
         if ($os -eq 'linux') {
             Write-ErrorRequest 'NO_ADMIN' "$name 上這個帳號沒有『免密碼 sudo』，需要 root 的操作 (安裝套件、重啟服務、pcx harden/teardown) 會失敗。" '若需要，請讓 PC2 設定免密碼 sudo (重新產生安裝資料夾時加 -PasswordlessSudo，等同給予 root 權限)；不需要 root 的操作可以照常使用。'
         } else {
-            Write-ErrorRequest 'NO_ADMIN' "$name 上這個帳號沒有管理員(已提升)權限，改設定、裝服務、pcx harden/teardown 會失敗。SSH 無法跳出 UAC 提示。" '若需要管理員操作，請改用 PC2 上的管理員帳號重新註冊 (pcx add <名稱> <管理員帳號>@<IP>)。'
+            Write-ErrorRequest 'NO_ADMIN' "$name 上這個帳號沒有管理員(已提升)權限，改設定、裝服務、pcx harden/teardown 會失敗。SSH 無法跳出 UAC 提示。" '若需要管理員操作：(1) 若這個帳號是 PC2 的管理員，請用最新版 pcx invite 產生的安裝資料夾在 PC2 重新執行 INSTALL.cmd (會設定 LocalAccountTokenFilterPolicy)，再重新 pcx add；(2) 否則改用 PC2 上的管理員帳號重新註冊 (pcx add <名稱> <管理員帳號>@<IP>)。'
         }
     }
 }

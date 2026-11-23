@@ -44,7 +44,7 @@ pcx harden pc2                    # 建議：確認金鑰可用後，關閉 PC2 
 
 | PC2 | 怎麼處理 |
 |---|---|
-| Windows | 用 PC2 的**管理員帳號**登入，SSH 工作階段就是已提升的管理員權限，不會有 UAC 提示。一般使用者帳號無法透過 SSH 提升權限，這種情況 pcx 會提出 `ADMIN_REQUIRED` |
+| Windows | 用 PC2 的**管理員帳號**登入，SSH 工作階段就是已提升的管理員權限，不會有 UAC 提示。本機管理員帳號安裝時會設定 `LocalAccountTokenFilterPolicy=1`（否則 Windows 會把本機帳號的遠端登入降成一般權限），原值會記錄，移除時還原；**這也會讓 SMB/WinRM 等遠端登入取得完整管理員權限**，請確保管理員帳號都有強密碼。一般使用者帳號無法透過 SSH 提升權限，這種情況 pcx 會提出 `ADMIN_REQUIRED` |
 | Ubuntu | SSH 是非互動式，`sudo` 要密碼就會失敗。兩種做法：① 產生安裝資料夾時加 `-PasswordlessSudo`（授權免密碼 sudo，**等同 root**，移除時自動撤銷）；② 不加，需要 root 的操作請自己在 PC2 做。AI 一律用 `sudo -n`，不會也不應該取得你的密碼 |
 
 ## 遇到無法自行解決的狀況：errorRequest
@@ -103,6 +103,7 @@ PC1 會刪除 `pcx` 指令、`~\.pcx`、專用金鑰 `id_ed25519_pcx`、`~/.ssh/
 ## 安全性與 OpenSSH 更新
 
 - 密碼登入在安裝時維持原樣（避免金鑰沒生效時把自己鎖在外面）。請在 `pcx add` 確認金鑰可用後，執行 `pcx harden <名稱>` 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證一次。這可擋掉密碼認證類的 sshd 漏洞。
+- Windows PC2 會設定 `LocalAccountTokenFilterPolicy=1`（見上方「管理員 / root 權限」），移除時還原。
 - 預設只開放區網來源。不用時執行 `pcx teardown <名稱>`，SSH 就不會一直開著，這是最有效的防護。
 - 腳本**不會自動升級** OpenSSH，只會在安裝結束時印出版本；Ubuntu 若有可用更新會提醒。
   - Ubuntu：評估後自行 `sudo apt install --only-upgrade openssh-server`；要在安裝時一起升級可加 `pcx invite ubuntu -UpgradeServer`（非互動、保留現有設定檔，不會刪資料，但會重啟 sshd 並可能連帶升級 openssl/libc）。
