@@ -62,12 +62,12 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 |---|---|
 | `install` | 複製腳本到 `~\.pcx`，建立 `pcx.cmd` |
 | `invite windows\|ubuntu` | 產生給 PC2 的資料夾；選項 `-AllowFrom`、`-DisablePassword`、`-UpgradeServer`、`-PasswordlessSudo`、`-SingleFile`、`-Out` |
-| `add 名稱 user@主機` | 註冊並測試；選項 `-Port`、`-Key`、`-Jump` |
+| `add 名稱 user@主機` | 註冊並測試；選項 `-Port`、`-Key`、`-Jump`；同一台（位址+埠+帳號+跳板機）已用別的名稱註冊時回報 `DUPLICATE_HOST`，`-Force` 才並存 |
 | `<名稱> "<指令>"` / `-File` | 遠端執行；`-RunTimeout`（預設 120）、`-Timeout`（連線，預設 60）、`-Encoding` |
 | `put` / `get` | 以 `scp -r` 傳檔 |
 | `harden 名稱` | 確認金鑰可登入後關閉密碼登入，再驗證一次 |
-| `list` / `status` / `clean` | 列出（含 admin）、平行檢測存活、清理已失效的註冊 |
-| `remove` / `teardown` / `uninstall` | 取消本機註冊 / 移除遠端存取 / 全部移除 |
+| `list` / `status` / `clean` | 列出（含連線目標、admin，並標出同一台主機的多個名稱）、平行檢測存活、清理已失效的註冊 |
+| `forget`（舊名 `remove`）/ `teardown` / `uninstall` | 只刪本機註冊、不連 PC2 / 移除遠端存取（同一台的其他名稱先警告確認，成功後一併取消註冊）/ 全部移除（同一台只 teardown 一次） |
 | `agents` | 在 `AGENTS.md` 寫入給 AI 的使用規則 |
 
 結束碼：`124` 逾時、`255` ssh 連線層失敗、`3` harden 前置條件不足（遠端腳本內）、`1` 一般失敗。
@@ -86,6 +86,7 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 | 不自動升級 OpenSSH，預設只檢查並提醒；`-UpgradeServer` 才升級 | 升級會重啟 sshd、可能連帶升級相依套件，不應在使用者不知情時發生 |
 | 遠端指令一律 `-T`、關閉 stdin、有總逾時 | 避免遠端等輸入（sudo 密碼、確認提示）卡住 AI |
 | 輸出一次性擷取，不即時串流 | 見第 8 節 |
+| 同一台主機不重複註冊（`DUPLICATE_HOST`） | teardown 是針對整台主機（金鑰、防火牆、sshd 設定），同一台有兩個名稱時移除其中一個，另一個也會失效。比對依據是 `~/.ssh/config` 區塊的 HostName/Port/User/ProxyJump；同一台分別用 IP 與電腦名稱註冊時偵測不到 |
 | `errorRequest` 固定格式 | 讓 AI 能機器判讀「需要人處理」並停下轉告，不自行繞過 |
 | Windows 預設 shell 一律設定（pwsh 7，沒有就 Windows PowerShell） | 否則 OpenSSH 預設是 cmd.exe，PowerShell 語法會失敗 |
 
@@ -95,7 +96,7 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 
 | 來源 | 代碼 |
 |---|---|
-| `pcx.ps1` | `HOST_NOT_REGISTERED` `SSH_CLIENT_MISSING` `HOSTKEY_CHANGED` `KEY_UNREADABLE` `NETWORK_BLOCKED` `DNS_FAILED` `AUTH_REJECTED` `SSH_NOT_RUNNING` `UNREACHABLE` `CONNECT_FAILED` `SUDO_PASSWORD_REQUIRED` `ADMIN_REQUIRED` `NO_ADMIN` `RUN_TIMEOUT` `HARDEN_PRECHECK_FAILED` `HARDEN_FAILED` `HARDEN_VERIFY_FAILED` `TEARDOWN_FAILED` `UNINSTALL_PARTIAL` |
+| `pcx.ps1` | `HOST_NOT_REGISTERED` `DUPLICATE_HOST` `SSH_CLIENT_MISSING` `HOSTKEY_CHANGED` `KEY_UNREADABLE` `NETWORK_BLOCKED` `DNS_FAILED` `AUTH_REJECTED` `SSH_NOT_RUNNING` `UNREACHABLE` `CONNECT_FAILED` `SUDO_PASSWORD_REQUIRED` `ADMIN_REQUIRED` `NO_ADMIN` `RUN_TIMEOUT` `HARDEN_PRECHECK_FAILED` `HARDEN_FAILED` `HARDEN_VERIFY_FAILED` `TEARDOWN_FAILED` `UNINSTALL_PARTIAL` |
 | `setup-remote.ps1` | `WINDOWS_CAPABILITY_QUERY_FAILED` `OPENSSH_NOT_AVAILABLE` `OPENSSH_INSTALL_FAILED` `SSHD_START_FAILED` `NO_IP_ADDRESS` |
 | `setup-remote.sh` | `NOT_DEBIAN` `NO_SYSTEMD` `APT_FAILED` `APT_UPGRADE_FAILED` `SSHD_START_FAILED` `SUDOERS_INVALID` `NO_IP_ADDRESS` |
 | harden 遠端腳本 | `HARDEN_NO_SUDO` `HARDEN_NO_ADMIN` |
@@ -153,6 +154,7 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 ## 10. 維護與測試方法
 
 - **隔離測試**（避免動到真正的 `~/.ssh`）：先設定 `$env:USERPROFILE` 與 `$env:HOME` 為暫存資料夾，再以 `pwsh -File` 執行；`pcx.ps1` 以 `$HOME` 決定 `~\.pcx` 與 `~\.ssh` 位置。注意 `ssh.exe` 讀的是真正的設定位置。
+- **自動測試**：`pwsh -NoProfile -File tests\duplicate-host.tests.ps1`（隔離 HOME，不連線；涵蓋重複註冊、`list` 標示、teardown 警告、`forget`）。
 - **語法檢查**：`[System.Management.Automation.Language.Parser]::ParseFile(...)`；`.sh` 轉 LF 後 `bash -n`。
 - **修改腳本後**：`pcx invite` 會讀同資料夾的 `setup-remote.*` / `remove-remote.*`，改完請重新產生 PC2 資料夾；`pcx install` 過的機器需再執行一次 `install` 同步 `~\.pcx` 的副本。
 - **換行**：`.sh` 一律 LF。產生資料夾與 Windows 的 `.cmd`（CRLF）由 `pcx invite` 處理。
