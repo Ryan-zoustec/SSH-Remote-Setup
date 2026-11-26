@@ -178,6 +178,13 @@ function Invoke-Capture {
         TimedOut = (-not $done)
     }
 }
+# 不帶金鑰連線，回傳伺服器在 "Permission denied (...)" 裡列出的可用認證方式 (例如 publickey,password)；讀不到則回傳 $null
+function Get-OfferedAuth([string]$name) {
+    $a = @('-o', 'BatchMode=yes', '-o', "ConnectTimeout=$Timeout", '-o', 'PubkeyAuthentication=no', '-o', 'GSSAPIAuthentication=no', '-T', $name, 'exit')
+    $r = Invoke-Capture -CmdArgs $a -TimeoutSec ($Timeout + 15)
+    if (($r.Out + $r.Err) -match 'Permission denied \(([^)]*)\)') { return $Matches[1] }
+    return $null
+}
 # 印出結果，並在失敗時輸出對應的 errorRequest；回傳結束碼
 function Show-Result($r, $name, $info) {
     $text = ($r.Out + $r.Err)
@@ -394,14 +401,15 @@ Windows Update 失敗、apt 被鎖住等)，會印出固定格式的區塊：
   SUDO_PASSWORD_REQUIRED  Ubuntu 的 sudo 要密碼 (見 pcx help admin)
   NO_ADMIN                註冊的帳號沒有管理員/免密碼 sudo
   RUN_TIMEOUT             遠端指令超過 -RunTimeout 秒 (多半在等輸入；改非互動寫法或調高逾時)
-  HARDEN_*                關閉密碼登入的前檢/執行/驗證失敗
+  HARDEN_*                關閉密碼登入的前檢/執行/驗證失敗；HARDEN_NOT_EFFECTIVE = 設定已寫入但伺服器仍提供密碼登入
+  INVALID_ALLOW_FROM      -AllowFrom 格式不對 (LocalSubnet、Any，或 IP / CIDR，逗號分隔)
   TEARDOWN_FAILED / UNINSTALL_PARTIAL   遠端移除失敗
   PC2 安裝腳本的問題：
     Windows  WINDOWS_CAPABILITY_QUERY_FAILED / OPENSSH_NOT_AVAILABLE / OPENSSH_INSTALL_FAILED / SSHD_START_FAILED / NO_IP_ADDRESS
     Ubuntu   NOT_DEBIAN / NO_SYSTEMD / APT_FAILED / APT_UPGRADE_FAILED / SSHD_START_FAILED / SUDOERS_INVALID / NO_IP_ADDRESS
 '@
 env = @'
-  區網                預設就是區網 (防火牆只允許 LocalSubnet；Ubuntu 需 ufw 已啟用)
+  區網                預設就是區網 (防火牆只允許 LocalSubnet，Ubuntu 需 ufw 已啟用；金鑰的 from= 限私有網段)
   網線直連            兩邊手動設同網段固定 IP (例如 192.168.50.1 / .2)，其餘相同
   VPN (Tailscale 等)  pcx invite windows -AllowFrom 100.64.0.0/10；pcx add 用 VPN 的 IP 或名稱
   指定來源網段        pcx invite ubuntu -AllowFrom 192.168.1.0/24
@@ -449,11 +457,16 @@ PC1 會刪除 pcx 指令、~\.pcx、專用金鑰 id_ed25519_pcx、~/.ssh/config 
 '@
 security = @'
 - 密碼登入在安裝時維持原樣 (避免金鑰沒生效時把自己鎖在外面)。pcx add 確認金鑰可用後，執行
-  pcx harden <名稱> 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證一次。
+  pcx harden <名稱> 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證金鑰仍可登入，
+  並以不帶金鑰的連線確認伺服器已不再提供 password / keyboard-interactive。
 - Windows PC2 會設定 LocalAccountTokenFilterPolicy=1，本機管理員帳號的所有遠端登入 (含 SMB/WinRM) 都是完整管理員權限；
   請確保本機管理員帳號都有強密碼，用完 pcx teardown 或 REMOVE.cmd 會還原成原值。
-- 來源限制 (-AllowFrom，預設區網)：Windows 一律設定防火牆規則；Ubuntu 只有 ufw 已啟用時才加規則，
-  ufw 沒啟用 (桌面版預設) 時 22 埠對所有來源開放，請自行啟用 ufw 或依賴上層防火牆。
+- 來源限制 (-AllowFrom，預設 LocalSubnet) 分三層：
+    1) 金鑰：authorized_keys 的 pcx 金鑰加上 from="<來源>",restrict，私鑰外流也無法從其他來源使用，且不能做連接埠轉發。
+       LocalSubnet 在這裡代表私有網段 (10/8、172.16/12、192.168/16、169.254/16 與 IPv6 對應網段)，PC2 換網路也不會被鎖在外面。
+    2) sshd (Ubuntu)：sshd_config 最後加上 Match Address 區塊，不在允許來源的連線不接受密碼登入；ufw 沒啟用也有效。
+    3) 防火牆：Windows 一律設定；Ubuntu 只有 ufw 已啟用時才加規則 (沒啟用時 22 埠仍對所有來源開放，但第 1、2 層仍有效)。
+  -AllowFrom Any 會略過第 1、2 層的來源限制 (restrict 仍會加上)。
 - 不用時執行 pcx teardown <名稱>，SSH 就不會一直開著，這是最有效的防護。
 - 腳本不會自動升級 OpenSSH，只會在安裝結束時印出版本；Ubuntu 若有可用更新會提醒。
     Ubuntu ：評估後自行 sudo apt install --only-upgrade openssh-server；
@@ -868,6 +881,12 @@ switch ($Cmd) {
     if ($os -notin 'windows', 'ubuntu') { throw '用法: pcx invite windows|ubuntu [-AllowFrom ...] [-DisablePassword] [-UpgradeServer] [-PasswordlessSudo] [-Out 名稱]' }
     Ensure-Key
     $pub = (Get-Content "$DefaultKey.pub" -Raw).Trim()
+    foreach ($a in @($AllowFrom -split '\s*,\s*' | Where-Object { $_ })) {
+        if ($a -notin 'LocalSubnet', 'Any' -and $a -notmatch '^[0-9A-Fa-f:.]+(/\d{1,3})?$') {
+            Write-ErrorRequest 'INVALID_ALLOW_FROM' "來源限制格式不正確: $a" '請用 LocalSubnet、Any，或 IP / CIDR 網段 (例如 192.168.1.0/24)，多個以逗號分隔。'
+            exit 1
+        }
+    }
     if ($AllowFrom -eq 'Any') { Write-Warning 'AllowFrom=Any 會讓任何來源都連得到 22 埠。請確認雲端安全群組已限制來源，或改用 VPN。' }
     if ($PasswordlessSudo -and $os -eq 'windows') { Write-Warning '-PasswordlessSudo 只對 Ubuntu 有效，已忽略。' }
     if ($PasswordlessSudo -and $os -eq 'ubuntu') { Write-Warning '-PasswordlessSudo 會讓持有 PC1 金鑰的人在 PC2 取得完整 root 權限，不需密碼。' }
@@ -923,13 +942,14 @@ pause
         $pwLine = if ($DisablePassword) { '已關閉密碼登入，只能用金鑰登入' } else { '密碼登入維持原樣；確認金鑰可用後，在 PC1 執行 pcx harden <名稱> 再關閉密碼登入' }
         $sudoLine = if ($PasswordlessSudo -and $os -eq 'ubuntu') { "`n  4. 授權此帳號免密碼 sudo (等同 root)；移除時會一併撤銷" }
                     elseif ($os -eq 'windows') { "`n  4. 本機管理員帳號：設定 LocalAccountTokenFilterPolicy=1，讓 SSH 登入取得完整管理員權限 (也適用 SMB/WinRM 等遠端登入；移除時還原原值)" } else { '' }
+        $sshdLine = if ($os -eq 'ubuntu' -and $AllowFrom -notmatch '(^|,)\s*Any\s*(,|$)') { "`n  5. sshd 設定：不在允許來源的連線一律不接受密碼登入 (即使 ufw 沒啟用也有效)；移除時還原" } else { '' }
         $readme = @"
 這個資料夾是由 pcx 產生，用來讓另一台電腦 (PC1) 透過 SSH 管理這台電腦。內容全部是明文，可直接用文字編輯器檢視。
 
 會做的事:
   1. 安裝並啟動 OpenSSH Server
-  2. 防火牆只允許指定來源連入 22 埠 (來源: $AllowFrom)
-  3. 把 pcx.pub (PC1 的公鑰) 加入授權金鑰；$pwLine$sudoLine
+  2. 防火牆只允許指定來源連入 22 埠 (來源: $AllowFrom；Ubuntu 需 ufw 已啟用)
+  3. 把 pcx.pub (PC1 的公鑰) 加入授權金鑰，並加上 from= (只接受來自上述來源的連線；LocalSubnet 代表私有網段) 與 restrict (關閉轉發)；$pwLine$sudoLine$sshdLine
 不會做的事: 不連到任何網路伺服器、不收集資料、不安裝其他程式。
 
 使用: $how
@@ -1106,9 +1126,16 @@ rm -f "$tmp"
         $script = @'
 S=""
 if [ "$(id -u)" -ne 0 ]; then
-  if sudo -n true 2>/dev/null; then S="sudo -n"; else echo "[errorRequest:HARDEN_NO_SUDO]"; echo "  問題: 這個帳號沒有免密碼 sudo，無法修改 sshd 設定。"; echo "  需要: 請在 PC2 本機執行: echo 'PasswordAuthentication no' | sudo tee /etc/ssh/sshd_config.d/99-remote.conf && sudo systemctl reload ssh"; exit 3; fi
+  if sudo -n true 2>/dev/null; then S="sudo -n"; else echo "[errorRequest:HARDEN_NO_SUDO]"; echo "  問題: 這個帳號沒有免密碼 sudo，無法修改 sshd 設定。"; echo "  需要: 請在 PC2 本機執行: printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee /etc/ssh/sshd_config.d/00-pcx.conf && sudo systemctl reload ssh"; exit 3; fi
 fi
-echo 'PasswordAuthentication no' | $S tee /etc/ssh/sshd_config.d/99-remote.conf >/dev/null
+# 檔名用 00- 開頭：sshd 對同一設定採用「最先讀到的值」，用 99- 會被 50-cloud-init.conf 等檔案的 PasswordAuthentication yes 蓋過
+D=/etc/ssh/sshd_config.d
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | $S tee "$D/00-pcx.conf" >/dev/null
+if ! $S /usr/sbin/sshd -t; then
+  $S rm -f "$D/00-pcx.conf"
+  echo "[errorRequest:HARDEN_FAILED]"; echo "  問題: 寫入 00-pcx.conf 後 sshd 設定檢查失敗 (見上方訊息)，已還原，密碼登入未變動。"; echo "  需要: 請在 PC2 本機執行 sudo sshd -t 查看設定錯誤。"; exit 4
+fi
+$S rm -f "$D/99-remote.conf"   # 舊版 pcx 的檔名
 grep -qxF 'password_disabled=1' /etc/ssh/pcx-state 2>/dev/null || echo 'password_disabled=1' | $S tee -a /etc/ssh/pcx-state >/dev/null
 $S systemctl reload ssh && echo "已關閉密碼登入 (只留金鑰)。"
 '@
@@ -1119,7 +1146,10 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 if (-not $isAdmin) { Write-Host '[errorRequest:HARDEN_NO_ADMIN]'; Write-Host '  問題: 這個帳號不是管理員，無法修改 sshd 設定。'; Write-Host '  需要: 請改用管理員帳號重新註冊後再執行 pcx harden，或在 PC2 本機修改 sshd_config。'; exit 3 }
 $cfg = Join-Path $env:ProgramData 'ssh\sshd_config'
 Copy-Item $cfg "$cfg.pcx-bak" -Force
-(Get-Content $cfg) -replace '^\s*#?\s*PasswordAuthentication\s+.*$', 'PasswordAuthentication no' | Set-Content $cfg -Encoding ascii
+# 密碼與 keyboard-interactive 都關掉 (設定行不存在時插在第一個 Match 之前，確保是全域設定)；經 -Command - 由 stdin 執行，每個敘述須寫在同一行
+$cfgLines = @(Get-Content $cfg)
+foreach ($kv in @(@('PasswordAuthentication', 'PasswordAuthentication'), @('KbdInteractiveAuthentication', '(KbdInteractiveAuthentication|ChallengeResponseAuthentication)'))) { $out = New-Object System.Collections.Generic.List[string]; $hit = $false; foreach ($l in $cfgLines) { if ($l -match ('^\s*#?\s*' + $kv[1] + '\s')) { $out.Add($kv[0] + ' no'); $hit = $true } else { $out.Add($l) } }; if (-not $hit) { $o2 = New-Object System.Collections.Generic.List[string]; $done = $false; foreach ($l in $out) { if (-not $done -and $l -match '^\s*Match\s') { $o2.Add($kv[0] + ' no'); $done = $true }; $o2.Add($l) }; if (-not $done) { $o2.Add($kv[0] + ' no') }; $out = $o2 }; $cfgLines = $out.ToArray() }
+$cfgLines | Set-Content $cfg -Encoding ascii
 $sf = Join-Path $env:ProgramData 'ssh\pcx-state.json'
 if (Test-Path $sf) { $s = Get-Content $sf -Raw | ConvertFrom-Json; $s.passwordDisabled = $true; $s | ConvertTo-Json | Set-Content $sf -Encoding utf8 }
 $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command "Start-Sleep 3; Restart-Service sshd; Unregister-ScheduledTask -TaskName pcx-restart -Confirm:$false"'
@@ -1140,14 +1170,24 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
     # 確認金鑰仍可登入 (sshd 重啟需要幾秒)
     Start-Sleep -Seconds 8
     $post = Invoke-Capture -CmdArgs ($o + @('echo pcx-ok')) -TimeoutSec ($Timeout + 15)
-    if ($post.Out -match 'pcx-ok') {
-        $h = Get-Hosts; if ($h.ContainsKey($name)) { $h[$name].hardened = $true; Save-Hosts $h }
-        "完成：$name 已只允許金鑰登入，並確認金鑰登入仍可使用。"
-    }
-    else {
-        Write-ErrorRequest 'HARDEN_VERIFY_FAILED' "已送出設定，但重新連線 $name 失敗 (sshd 可能仍在重啟，或設定有誤)。" "請稍後執行 pcx status $name 確認；若持續連不上，需要到 $name 本機把 sshd_config 的 PasswordAuthentication 改回 yes (備份在 sshd_config.pcx-bak 或 99-remote.conf) 並重啟 SSH 服務。"
+    if ($post.Out -notmatch 'pcx-ok') {
+        Write-ErrorRequest 'HARDEN_VERIFY_FAILED' "已送出設定，但重新連線 $name 失敗 (sshd 可能仍在重啟，或設定有誤)。" "請稍後執行 pcx status $name 確認；若持續連不上，需要到 $name 本機移除 /etc/ssh/sshd_config.d/00-pcx.conf (Ubuntu)，或用 sshd_config.pcx-bak 還原 sshd_config (Windows)，並重啟 SSH 服務。"
         exit 1
     }
+    # 確認密碼登入「真的」關了：以不帶金鑰的方式連線，讀伺服器回報的可用認證方式
+    $methods = Get-OfferedAuth $name
+    $h = Get-Hosts
+    if ($null -eq $methods) {
+        Write-ErrorRequest 'HARDEN_VERIFY_FAILED' "金鑰登入正常，但無法確認 $name 是否仍提供密碼登入 (讀不到伺服器回報的認證方式)。" "請在 PC1 執行 ssh -o PubkeyAuthentication=no -o BatchMode=yes $name exit，看最後一行 Permission denied (...) 括號內是否還有 password；有的話請到 $name 本機檢查 sshd 設定。"
+        exit 1
+    }
+    if ($methods -match 'password|keyboard-interactive') {
+        if ($h.ContainsKey($name)) { $h[$name].hardened = $false; Save-Hosts $h }
+        Write-ErrorRequest 'HARDEN_NOT_EFFECTIVE' "$name 的設定已寫入，但伺服器仍提供: $methods (密碼登入沒有關掉；可能有其他設定檔或 Match 區塊覆蓋)。" "請到 $name 本機執行 sudo sshd -T | grep -i passwordauthentication (Windows 看 C:\ProgramData\ssh\sshd_config)，找出仍開啟密碼登入的設定後再重試 pcx harden。"
+        exit 1
+    }
+    if ($h.ContainsKey($name)) { $h[$name].hardened = $true; Save-Hosts $h }
+    "完成：$name 只接受金鑰登入 (伺服器提供的認證方式: $methods)，並確認金鑰登入仍可使用。"
 }
 
 'list' {

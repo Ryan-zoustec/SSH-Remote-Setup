@@ -53,8 +53,8 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 | PC1 `~/.ssh/id_ed25519_pcx(.pub)` | 專用金鑰（無密碼） |
 | PC2 Windows `%ProgramData%\ssh\pcx-state.json` | `installedServer, wasRunning, firewallExisted, prevRemoteAddress, prevEnabled, prevDefaultShell, setDefaultShell, passwordDisabled, tokenFilterSet, prevTokenFilter` (後兩者：LocalAccountTokenFilterPolicy 是否由 pcx 設定、原值；原本不存在記為 null，移除時刪除) |
 | PC2 Windows 其他 | `administrators_authorized_keys`、防火牆規則 `OpenSSH-Server-In-TCP`、`sshd_config.pcx-bak`、暫時的排程工作 `pcx-remove` / `pcx-restart` |
-| PC2 Ubuntu `/etc/ssh/pcx-state` | `installed_server`、`was_active`、`ufw=規則`、`password_disabled`、`sudoers` |
-| PC2 Ubuntu 其他 | `~/.ssh/authorized_keys`、`/etc/ssh/sshd_config.d/99-remote.conf`、`/etc/sudoers.d/pcx` |
+| PC2 Ubuntu `/etc/ssh/pcx-state` | `installed_server`、`was_active`、`ufw=規則`、`sshd_match`、`password_disabled`、`sudoers` |
+| PC2 Ubuntu 其他 | `~/.ssh/authorized_keys`、`/etc/ssh/sshd_config.d/00-pcx.conf`（舊版為 `99-remote.conf`，移除時一併刪除）、`/etc/ssh/sshd_config` 最後以 `# >>> pcx >>>` / `# <<< pcx <<<` 包住的 `Match Address` 區塊、`/etc/sudoers.d/pcx` |
 
 ## 4. pcx 指令對照
 
@@ -81,7 +81,10 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 | 預設輸出「明文資料夾」，不用 base64 | base64 + `[scriptblock]::Create` 是惡意程式常見手法，易被 AMSI/防毒誤判；明文可被人與防毒檢視 |
 | 安裝時記錄「原本狀態」，移除依此還原 | 避免關掉原本就在用的 SSH、或蓋掉使用者原有的防火牆/設定 |
 | 遠端移除用排程工作（Windows）/ `setsid`（Ubuntu）延遲執行 | 移除會停掉正在使用的 SSH 連線，必須脫離該連線才不會中途中斷 |
-| 密碼登入預設不關，改由 `pcx harden` 關閉 | 避免金鑰沒生效時鎖死；`harden` 先驗證金鑰、事後再驗證 |
+| 密碼登入預設不關，改由 `pcx harden` 關閉 | 避免金鑰沒生效時鎖死；`harden` 先驗證金鑰，事後驗證金鑰仍可登入，並以 `PubkeyAuthentication=no` 連線讀 `Permission denied (...)` 確認伺服器不再提供 password / keyboard-interactive |
+| Ubuntu 的 sshd drop-in 用 `00-pcx.conf` | sshd 對同一設定採用最先讀到的值，`sshd_config.d/*.conf` 依檔名排序；用 `99-` 會被 `50-cloud-init.conf` 的 `PasswordAuthentication yes` 蓋過 |
+| 金鑰加 `from="<來源>",restrict` | 私鑰外流也無法從允許來源以外使用，且禁止轉發；`LocalSubnet` 對應私有網段而不是當下的網段，避免 PC2 換網路後被鎖在外面 |
+| Ubuntu 在 `sshd_config` 最後加 `Match Address` 區塊 | 不依賴 ufw：不在允許來源的連線不接受密碼登入。Match 區塊必須在檔案最後（放在 drop-in 會把主設定檔後面的內容變成條件式），寫入後以 `sshd -t` 檢查，失敗就移除 |
 | 防火牆預設只允許區網（`LocalSubnet`），可用 `-AllowFrom` 指定 | 降低暴露面；雲端/VPN 時由使用者明確指定來源 |
 | 不自動升級 OpenSSH，預設只檢查並提醒；`-UpgradeServer` 才升級 | 升級會重啟 sshd、可能連帶升級相依套件，不應在使用者不知情時發生 |
 | 遠端指令一律 `-T`、關閉 stdin、有總逾時 | 避免遠端等輸入（sudo 密碼、確認提示）卡住 AI |
@@ -96,17 +99,17 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 
 | 來源 | 代碼 |
 |---|---|
-| `pcx.ps1` | `HOST_NOT_REGISTERED` `DUPLICATE_HOST` `SSH_CLIENT_MISSING` `HOSTKEY_CHANGED` `KEY_UNREADABLE` `NETWORK_BLOCKED` `DNS_FAILED` `AUTH_REJECTED` `SSH_NOT_RUNNING` `UNREACHABLE` `CONNECT_FAILED` `SUDO_PASSWORD_REQUIRED` `ADMIN_REQUIRED` `NO_ADMIN` `RUN_TIMEOUT` `HARDEN_PRECHECK_FAILED` `HARDEN_FAILED` `HARDEN_VERIFY_FAILED` `TEARDOWN_FAILED` `UNINSTALL_PARTIAL` |
-| `setup-remote.ps1` | `WINDOWS_CAPABILITY_QUERY_FAILED` `OPENSSH_NOT_AVAILABLE` `OPENSSH_INSTALL_FAILED` `SSHD_START_FAILED` `NO_IP_ADDRESS` |
-| `setup-remote.sh` | `NOT_DEBIAN` `NO_SYSTEMD` `APT_FAILED` `APT_UPGRADE_FAILED` `SSHD_START_FAILED` `SUDOERS_INVALID` `NO_IP_ADDRESS` |
-| harden 遠端腳本 | `HARDEN_NO_SUDO` `HARDEN_NO_ADMIN` |
+| `pcx.ps1` | `HOST_NOT_REGISTERED` `DUPLICATE_HOST` `SSH_CLIENT_MISSING` `HOSTKEY_CHANGED` `KEY_UNREADABLE` `NETWORK_BLOCKED` `DNS_FAILED` `AUTH_REJECTED` `SSH_NOT_RUNNING` `UNREACHABLE` `CONNECT_FAILED` `SUDO_PASSWORD_REQUIRED` `ADMIN_REQUIRED` `NO_ADMIN` `RUN_TIMEOUT` `HARDEN_PRECHECK_FAILED` `HARDEN_FAILED` `HARDEN_VERIFY_FAILED` `HARDEN_NOT_EFFECTIVE` `INVALID_ALLOW_FROM` `TEARDOWN_FAILED` `UNINSTALL_PARTIAL` |
+| `setup-remote.ps1` | `INVALID_ALLOW_FROM` `WINDOWS_CAPABILITY_QUERY_FAILED` `OPENSSH_NOT_AVAILABLE` `OPENSSH_INSTALL_FAILED` `SSHD_START_FAILED` `NO_IP_ADDRESS` |
+| `setup-remote.sh` | `INVALID_ALLOW_FROM` `NOT_DEBIAN` `NO_SYSTEMD` `APT_FAILED` `APT_UPGRADE_FAILED` `SSHD_START_FAILED` `SUDOERS_INVALID` `NO_IP_ADDRESS` |
+| harden 遠端腳本 | `HARDEN_NO_SUDO` `HARDEN_NO_ADMIN` `HARDEN_FAILED`（Ubuntu：`sshd -t` 失敗，已還原） |
 
 新增代碼時：在對應位置加分支，並同步更新 README 的代碼清單。
 
 ## 7. 安全模型
 
 - 登入後的權限：Windows 為管理員（金鑰寫入 `administrators_authorized_keys`），Ubuntu 為安裝時的帳號；加 `-PasswordlessSudo` 等同 root。**PC1 私鑰外洩 = 所有已授權的 PC2 被控制**。
-- 專用金鑰沒有密碼（為了免互動）。跨網路使用建議搭配 VPN 或來源 IP 限制，並可自行用 `ssh-keygen -p` 加密碼（需搭配 ssh-agent，目前 `pcx` 未整合）。
+- 專用金鑰沒有密碼（為了免互動）。安裝時在 PC2 的授權行加上 `from="<來源>",restrict`，私鑰外流也只能從允許的來源使用；跨網路使用建議搭配 VPN，並可自行用 `ssh-keygen -p` 加密碼（需搭配 ssh-agent，目前 `pcx` 未整合）。
 - 所有 PC2 共用同一把金鑰；雲端 VM 可用 `-Key` 指定各自金鑰。
 - 公鑰不是機密，zip 與安裝資料夾裡只有公鑰。
 - 2026-11 的 OpenSSH 漏洞 CVE-2026-123158（SSHole）：編號已在 Debian Security Tracker（https://security-tracker.debian.org/tracker/CVE-2026-123158）與 Red Hat CVE 頁面（https://access.redhat.com/security/cve/cve-2026-123158）收錄。依公開報導，主要影響 musl 且無 PAM 的系統（如 Alpine），緩解方式為關閉密碼認證；本工具的 `harden` 對應此緩解。影響範圍細節仍以 OpenSSH 官方公告為準。

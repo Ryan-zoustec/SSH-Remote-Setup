@@ -30,7 +30,7 @@ if (-not $state) {
     # 2. 還原密碼登入設定
     if ($state.passwordDisabled) {
         $cfg = Join-Path $sshDir 'sshd_config'
-        (Get-Content $cfg) -replace '^PasswordAuthentication\s+no\s*$', '#PasswordAuthentication yes' | Set-Content $cfg -Encoding ascii
+        (Get-Content $cfg) -replace '^PasswordAuthentication\s+no\s*$', '#PasswordAuthentication yes' -replace '^KbdInteractiveAuthentication\s+no\s*$', '#KbdInteractiveAuthentication yes' | Set-Content $cfg -Encoding ascii
     }
     # 3. 還原預設 shell
     if ($state.setDefaultShell) {
