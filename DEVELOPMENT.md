@@ -156,7 +156,7 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 - **隔離測試**（避免動到真正的 `~/.ssh`）：先設定 `$env:USERPROFILE` 與 `$env:HOME` 為暫存資料夾，再以 `pwsh -File` 執行；`pcx.ps1` 以 `$HOME` 決定 `~\.pcx` 與 `~\.ssh` 位置。注意 `ssh.exe` 讀的是真正的設定位置。
 - **自動測試**：`pwsh -NoProfile -File tests\duplicate-host.tests.ps1`（隔離 HOME，不連線；涵蓋重複註冊、`list` 標示、teardown 警告、`forget`）。
 - **語法檢查**：`[System.Management.Automation.Language.Parser]::ParseFile(...)`；`.sh` 轉 LF 後 `bash -n`。
-- **修改腳本後**：`pcx invite` 會讀同資料夾的 `setup-remote.*` / `remove-remote.*`，改完請重新產生 PC2 資料夾；`pcx install` 過的機器需再執行一次 `install` 同步 `~\.pcx` 的副本。
+- **修改腳本後**：`pcx invite` 會讀同資料夾的 `setup-remote.*` / `remove-remote.*`，改完請重新產生 PC2 資料夾；`pcx install` 過的機器需在專案資料夾再執行一次 `pcx install` 同步 `~\.pcx` 的副本（全域指令執行的是 `~\.pcx` 的副本，所以 `install` 會改用目前資料夾的 `pcx.ps1` 當來源；舊版沒有這個行為，需用 `pwsh -NoProfile -File .\pcx.ps1 install`）。
 - **換行**：`.sh` 一律 LF。產生資料夾與 Windows 的 `.cmd`（CRLF）由 `pcx invite` 處理。
 - **新增 errorRequest**：同步更新本文件第 6 節與 README。
 

@@ -834,8 +834,16 @@ switch ($Cmd) {
 
 'install' {
     New-Item -ItemType Directory -Force -Path $PcxDir | Out-Null
-    if ((Resolve-Path $PSScriptRoot).Path -ne (Resolve-Path $PcxDir).Path) {
-        Copy-Item (Join-Path $PSScriptRoot '*.ps1'), (Join-Path $PSScriptRoot '*.sh'), (Join-Path $PSScriptRoot 'WIZARD.cmd') -Destination $PcxDir -Force
+    # 來源：執行中的 pcx.ps1 所在資料夾。若是透過全域指令 (~\.pcx 的副本) 執行，改用目前資料夾裡的 pcx.ps1 (例如 git pull 後的專案資料夾)
+    $src = (Resolve-Path $PSScriptRoot).Path
+    if ($src -eq (Resolve-Path $PcxDir).Path) {
+        $here = (Get-Location).Path
+        if ((Test-Path (Join-Path $here 'pcx.ps1')) -and $here -ne $src) { $src = $here }
+        else { Write-Warning "目前執行的是已安裝的副本 ($PcxDir)，沒有可更新的來源。要更新，請到專案資料夾執行 pcx install，或執行: pwsh -NoProfile -File <專案資料夾>\pcx.ps1 install" }
+    }
+    if ($src -ne (Resolve-Path $PcxDir).Path) {
+        Copy-Item (Join-Path $src '*.ps1'), (Join-Path $src '*.sh'), (Join-Path $src 'WIZARD.cmd') -Destination $PcxDir -Force
+        Write-Host "已從 $src 複製最新版到 $PcxDir"
     }
     $npm = Join-Path $env:APPDATA 'npm'
     if (($env:Path -split ';') -contains $npm -and (Test-Path $npm)) { $shimDir = $npm } else { $shimDir = $PcxDir }
