@@ -109,7 +109,7 @@ PC1: AI CLI ──呼叫──> pcx.ps1 ──ssh/scp──> PC2: sshd ──> �
 - 專用金鑰沒有密碼（為了免互動）。跨網路使用建議搭配 VPN 或來源 IP 限制，並可自行用 `ssh-keygen -p` 加密碼（需搭配 ssh-agent，目前 `pcx` 未整合）。
 - 所有 PC2 共用同一把金鑰；雲端 VM 可用 `-Key` 指定各自金鑰。
 - 公鑰不是機密，zip 與安裝資料夾裡只有公鑰。
-- 2026-11 的 OpenSSH 漏洞 CVE-2026-123158（sshhole）：依搜尋結果，主要影響 musl 且無 PAM 的 Linux（如 Alpine），緩解方式為關閉密碼認證；本工具的 `harden` 對應此緩解。**以上來自二手報導，未對照官方公告逐項驗證**。
+- 2026-11 的 OpenSSH 漏洞 CVE-2026-123158（SSHole）：編號已在 Debian Security Tracker（https://security-tracker.debian.org/tracker/CVE-2026-123158）與 Red Hat CVE 頁面（https://access.redhat.com/security/cve/cve-2026-123158）收錄。依公開報導，主要影響 musl 且無 PAM 的系統（如 Alpine），緩解方式為關閉密碼認證；本工具的 `harden` 對應此緩解。影響範圍細節仍以 OpenSSH 官方公告為準。
 - 防毒/EDR：開啟 SSH、改防火牆、以 SYSTEM 排程工作執行腳本等行為，在管理嚴格的環境仍可能被攔截或通報，需先取得 IT 同意。
 
 - Windows PC2 以本機管理員帳號安裝時設定 `LocalAccountTokenFilterPolicy=1`，否則 UAC 遠端限制會讓 SSH 拿到降級 token（`pcx add` 判為 NO_ADMIN）。代價：該機所有本機管理員帳號的網路登入（SMB/WinRM 等）都是完整權限；網域帳號不受此原則影響故不設定。

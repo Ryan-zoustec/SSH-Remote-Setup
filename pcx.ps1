@@ -25,7 +25,7 @@
   invite 的選項: -AllowFrom <LocalSubnet | 192.168.1.0/24 | 100.64.0.0/10 | Any>  -DisablePassword (安裝時就關閉密碼登入，建議改用 pcx harden)
                  -UpgradeServer (Ubuntu：順便升級 openssh-server)  -PasswordlessSudo (Ubuntu：授權免密碼 sudo，等同 root，請謹慎)  -Out <名稱>
   執行的選項:    -RunTimeout 120 (遠端指令總逾時秒數)  -Timeout 60 (連線逾時)  -Encoding utf-8 (遠端輸出亂碼時改 950)
-  teardown / uninstall 的選項: -UninstallServer  -All  -Yes (不詢問)  -Force (遠端失敗也繼續清本機)
+  teardown / uninstall 的選項: -UninstallServer  -Yes (不詢問)；uninstall 另有 -All  -Force (遠端失敗也繼續清本機)
 
   遇到 pcx 無法自行解決的狀況，會印出 [errorRequest:代碼] 區塊，說明問題與需要使用者做什麼。
 #>
@@ -343,9 +343,9 @@ PC2 = 要被操作的電腦 (Windows 或 Ubuntu)。PC2 只開 OpenSSH，不裝 A
    加 -SingleFile 改產生單一檔案；-Out <名稱> 指定輸出名稱。
 
 2) PC2：把整個資料夾複製過去 (隨身碟、雲端硬碟、scp 皆可) 後執行
-     Windows：對 INSTALL.cmd 按右鍵「以系統管理員身分執行」
+     Windows：雙擊 INSTALL.cmd (會自動跳出 UAC 要求系統管理員權限)
      Ubuntu ：bash install.sh
-   畫面最後會印出 PC2 的 IP。
+   畫面最後會印出 PC2 的 IP 與可直接複製的 pcx add 指令。
 
 3) PC1：註冊並測試
      pcx add pc2 admin@192.168.1.50   註冊並測試連線，同時檢查 PC2 有沒有管理員/sudo 權限
@@ -380,6 +380,8 @@ Windows Update 失敗、apt 被鎖住等)，會印出固定格式的區塊：
 
 常見代碼：
   HOST_NOT_REGISTERED     還沒 pcx add，或執行身分 (AI 沙盒) 看不到 ~\.pcx
+  DUPLICATE_HOST          同一台 (帳號+位址+埠+跳板機) 已用別的名稱註冊；沿用舊名稱，或 forget 後再 add，確定要並存才加 -Force
+  CONNECT_FAILED          pcx add 連線失敗，原因不在已知清單內 (看上方 ssh 訊息)
   AUTH_REJECTED           PC2 拒絕金鑰：沒在 PC2 執行「這台 PC1 產生」的安裝檔、使用者名稱錯、或非管理員帳號
   UNREACHABLE             連不到 (關機/睡眠、IP 變了、不同網段、訪客 Wi-Fi 隔離、雲端安全群組)
   SSH_NOT_RUNNING         主機在線但 sshd 沒跑或埠不對 (重新執行安裝檔，或 -Port 重新註冊)
@@ -394,10 +396,12 @@ Windows Update 失敗、apt 被鎖住等)，會印出固定格式的區塊：
   RUN_TIMEOUT             遠端指令超過 -RunTimeout 秒 (多半在等輸入；改非互動寫法或調高逾時)
   HARDEN_*                關閉密碼登入的前檢/執行/驗證失敗
   TEARDOWN_FAILED / UNINSTALL_PARTIAL   遠端移除失敗
-  OPENSSH_INSTALL_FAILED / APT_FAILED / NO_SYSTEMD / NO_IP_ADDRESS   PC2 安裝腳本的問題
+  PC2 安裝腳本的問題：
+    Windows  WINDOWS_CAPABILITY_QUERY_FAILED / OPENSSH_NOT_AVAILABLE / OPENSSH_INSTALL_FAILED / SSHD_START_FAILED / NO_IP_ADDRESS
+    Ubuntu   NOT_DEBIAN / NO_SYSTEMD / APT_FAILED / APT_UPGRADE_FAILED / SSHD_START_FAILED / SUDOERS_INVALID / NO_IP_ADDRESS
 '@
 env = @'
-  區網                預設就是區網 (防火牆只允許 LocalSubnet)
+  區網                預設就是區網 (防火牆只允許 LocalSubnet；Ubuntu 需 ufw 已啟用)
   網線直連            兩邊手動設同網段固定 IP (例如 192.168.50.1 / .2)，其餘相同
   VPN (Tailscale 等)  pcx invite windows -AllowFrom 100.64.0.0/10；pcx add 用 VPN 的 IP 或名稱
   指定來源網段        pcx invite ubuntu -AllowFrom 192.168.1.0/24
@@ -413,7 +417,7 @@ env = @'
             -PasswordlessSudo (僅 Ubuntu，等同 root)  -SingleFile  -Out <名稱>
   執行      -RunTimeout 120 (遠端指令總逾時秒數)  -Timeout 60 (連線逾時)  -Encoding utf-8 (亂碼改 950)
   status/clean   -Timeout 5  -IncludeOffline  -Yes
-  teardown/uninstall   -UninstallServer  -All  -Yes (不詢問)  -Force (遠端失敗也繼續清本機)
+  teardown/uninstall   -UninstallServer  -Yes (不詢問)；uninstall 另有 -All  -Force (遠端失敗也繼續清本機)
 '@
 daily = @'
   pcx pc2 "Get-Service sshd"              Windows 遠端用 PowerShell 語法；Ubuntu 用 bash
@@ -448,12 +452,15 @@ security = @'
   pcx harden <名稱> 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證一次。
 - Windows PC2 會設定 LocalAccountTokenFilterPolicy=1，本機管理員帳號的所有遠端登入 (含 SMB/WinRM) 都是完整管理員權限；
   請確保本機管理員帳號都有強密碼，用完 pcx teardown 或 REMOVE.cmd 會還原成原值。
-- 預設只開放區網來源。不用時執行 pcx teardown <名稱>，SSH 就不會一直開著，這是最有效的防護。
+- 來源限制 (-AllowFrom，預設區網)：Windows 一律設定防火牆規則；Ubuntu 只有 ufw 已啟用時才加規則，
+  ufw 沒啟用 (桌面版預設) 時 22 埠對所有來源開放，請自行啟用 ufw 或依賴上層防火牆。
+- 不用時執行 pcx teardown <名稱>，SSH 就不會一直開著，這是最有效的防護。
 - 腳本不會自動升級 OpenSSH，只會在安裝結束時印出版本；Ubuntu 若有可用更新會提醒。
     Ubuntu ：評估後自行 sudo apt install --only-upgrade openssh-server；
              或 pcx invite ubuntu -UpgradeServer (非互動、保留設定檔，但會重啟 sshd，可能連帶升級 openssl/libc)。
     Windows：OpenSSH 由 Windows Update 維護，請定期更新 Windows。
-- 發現 OpenSSH 重大漏洞時，請對照官方公告確認影響範圍。
+- 發現 OpenSSH 重大漏洞時，請對照官方公告與發行版的安全追蹤確認影響範圍。
+  例如 CVE-2026-123158 (SSHole) 主要影響 musl 且無 PAM 的系統 (如 Alpine)，緩解方式之一是關閉密碼登入 (pcx harden)。
 '@
 ai = @'
 (完整版見 AI-GUIDE.md；以下為重點)
