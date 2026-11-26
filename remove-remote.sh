@@ -34,7 +34,8 @@ STATE=/etc/ssh/pcx-state
 if [ ! -f "$STATE" ]; then
   echo "找不到 pcx 的安裝紀錄：只移除了 pcx 金鑰，其餘設定未變動。"
 else
-  rm -f /etc/ssh/sshd_config.d/99-remote.conf
+  rm -f /etc/ssh/sshd_config.d/00-pcx.conf /etc/ssh/sshd_config.d/99-remote.conf   # 99-remote.conf 是舊版 pcx 的檔名
+  sed -i '/^# >>> pcx >>>$/,/^# <<< pcx <<<$/d' /etc/ssh/sshd_config                 # sshd 層的來源限制
   grep -qx 'sudoers=1' "$STATE" && rm -f /etc/sudoers.d/pcx   # 撤銷免密碼 sudo
   if command -v ufw >/dev/null; then
     grep '^ufw=' "$STATE" | cut -d= -f2- | while read -r spec; do ufw delete allow $spec >/dev/null 2>&1 || true; done

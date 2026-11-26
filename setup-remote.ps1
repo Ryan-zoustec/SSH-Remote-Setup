@@ -18,6 +18,20 @@ if ($PublicKey -notmatch '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-\S+) \S+') {
     throw '公鑰格式不正確，請提供 ssh-ed25519 / ssh-rsa / ecdsa 開頭的整行內容 (.pub 檔)。'
 }
 $addr = @($AllowFrom -split '\s*,\s*' | Where-Object { $_ })
+foreach ($a in $addr) {
+    if ($a -notin 'LocalSubnet', 'Any' -and $a -notmatch '^[0-9A-Fa-f:.]+(/\d{1,3})?$') {
+        Write-Host '[errorRequest:INVALID_ALLOW_FROM]' -ForegroundColor Red
+        Write-Host "  問題: 來源限制格式不正確: $a"
+        Write-Host '  需要: 請用 LocalSubnet、Any，或 IP / CIDR 網段 (例如 192.168.1.0/24)，多個以逗號分隔。'
+        exit 1
+    }
+}
+# 金鑰的 from= 來源清單：LocalSubnet => 私有網段 (網路變動也不會被鎖在外面)；含 Any => 不限制
+$privateNets = '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '127.0.0.0/8', 'fc00::/7', 'fe80::/10', '::1/128'
+$srcNets = @()
+if ($addr -notcontains 'Any') {
+    foreach ($a in $addr) { if ($a -eq 'LocalSubnet') { $srcNets += $privateNets } else { $srcNets += $a } }
+}
 if ($addr -contains 'Any') { Write-Warning 'AllowFrom=Any：任何來源都連得到 22 埠。請確認雲端安全群組已限制來源，或改用 VPN。' }
 
 $sshDir    = Join-Path $env:ProgramData 'ssh'
@@ -82,11 +96,14 @@ if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) {
 }
 
 # 3. 寫入公鑰 (系統管理員群組使用 administrators_authorized_keys)
+#    加上 from= (只接受來自允許來源的連線，私鑰外流也無法從別處使用) 與 restrict (關閉轉發/agent/X11/pty)
 $keyFile = Join-Path $sshDir 'administrators_authorized_keys'
 if (-not (Test-Path $keyFile)) { New-Item -ItemType File -Path $keyFile -Force | Out-Null }
-if (-not (Select-String -Path $keyFile -SimpleMatch -Pattern $PublicKey -Quiet)) {
-    Add-Content -Path $keyFile -Value $PublicKey -Encoding ascii
-}
+$keyBody = ($PublicKey -split '\s+')[1]
+$opts = if ($srcNets.Count) { 'from="' + ($srcNets -join ',') + '",restrict' } else { 'restrict' }
+# 同一把金鑰已存在 (舊版沒有選項，或來源不同) 時先移除舊行再寫入
+$keep = @(Get-Content $keyFile | Where-Object { $_ -and -not $_.Contains($keyBody) })
+Set-Content -Path $keyFile -Value ($keep + "$opts $PublicKey") -Encoding ascii
 icacls $keyFile /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
 
 # 4. 預設 shell：有 PowerShell 7 就用它，否則用 Windows PowerShell (否則 SSH 預設會是 cmd.exe)
@@ -116,7 +133,19 @@ if ($env:USERDOMAIN -eq $env:COMPUTERNAME) {
 # 5. 可選：關閉密碼登入
 if ($DisablePasswordLogin) {
     $cfg = Join-Path $sshDir 'sshd_config'
-    (Get-Content $cfg) -replace '^\s*#?\s*PasswordAuthentication\s+.*$', 'PasswordAuthentication no' | Set-Content $cfg -Encoding ascii
+    $cfgLines = @(Get-Content $cfg)
+    foreach ($kv in @(@('PasswordAuthentication', 'PasswordAuthentication'), @('KbdInteractiveAuthentication', '(KbdInteractiveAuthentication|ChallengeResponseAuthentication)'))) {
+        $out = New-Object System.Collections.Generic.List[string]; $hit = $false
+        foreach ($l in $cfgLines) { if ($l -match ('^\s*#?\s*' + $kv[1] + '\s')) { $out.Add($kv[0] + ' no'); $hit = $true } else { $out.Add($l) } }
+        if (-not $hit) {
+            $o2 = New-Object System.Collections.Generic.List[string]; $done = $false
+            foreach ($l in $out) { if (-not $done -and $l -match '^\s*Match\s') { $o2.Add($kv[0] + ' no'); $done = $true }; $o2.Add($l) }
+            if (-not $done) { $o2.Add($kv[0] + ' no') }
+            $out = $o2
+        }
+        $cfgLines = $out.ToArray()
+    }
+    $cfgLines | Set-Content $cfg -Encoding ascii
     $state.passwordDisabled = $true
     Restart-Service sshd
 }

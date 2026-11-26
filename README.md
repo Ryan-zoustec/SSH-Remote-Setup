@@ -88,9 +88,9 @@ pcx 與安裝腳本遇到自己解決不了的問題時，會印出固定格式�
 |---|---|
 | PC1 連線 | `SSH_CLIENT_MISSING`、`HOST_NOT_REGISTERED`、`DUPLICATE_HOST`、`AUTH_REJECTED`、`UNREACHABLE`、`SSH_NOT_RUNNING`、`DNS_FAILED`、`HOSTKEY_CHANGED`、`KEY_UNREADABLE`、`NETWORK_BLOCKED`、`CONNECT_FAILED` |
 | 權限與執行 | `NO_ADMIN`、`ADMIN_REQUIRED`、`SUDO_PASSWORD_REQUIRED`、`RUN_TIMEOUT` |
-| harden / 移除 | `HARDEN_PRECHECK_FAILED`、`HARDEN_NO_ADMIN`、`HARDEN_NO_SUDO`、`HARDEN_FAILED`、`HARDEN_VERIFY_FAILED`、`TEARDOWN_FAILED`、`UNINSTALL_PARTIAL` |
-| PC2 安裝（Windows） | `WINDOWS_CAPABILITY_QUERY_FAILED`、`OPENSSH_NOT_AVAILABLE`、`OPENSSH_INSTALL_FAILED`、`SSHD_START_FAILED`、`NO_IP_ADDRESS` |
-| PC2 安裝（Ubuntu） | `NOT_DEBIAN`、`NO_SYSTEMD`、`APT_FAILED`、`APT_UPGRADE_FAILED`、`SSHD_START_FAILED`、`SUDOERS_INVALID`、`NO_IP_ADDRESS` |
+| harden / 移除 | `HARDEN_PRECHECK_FAILED`、`HARDEN_NO_ADMIN`、`HARDEN_NO_SUDO`、`HARDEN_FAILED`、`HARDEN_VERIFY_FAILED`、`HARDEN_NOT_EFFECTIVE`、`TEARDOWN_FAILED`、`UNINSTALL_PARTIAL` |
+| PC2 安裝（Windows） | `INVALID_ALLOW_FROM`、`WINDOWS_CAPABILITY_QUERY_FAILED`、`OPENSSH_NOT_AVAILABLE`、`OPENSSH_INSTALL_FAILED`、`SSHD_START_FAILED`、`NO_IP_ADDRESS` |
+| PC2 安裝（Ubuntu） | `INVALID_ALLOW_FROM`、`NOT_DEBIAN`、`NO_SYSTEMD`、`APT_FAILED`、`APT_UPGRADE_FAILED`、`SSHD_START_FAILED`、`SUDOERS_INVALID`、`NO_IP_ADDRESS` |
 
 各代碼的說明見 `pcx help errors`。
 
@@ -144,8 +144,13 @@ PC1 會刪除 `pcx` 指令、`~\.pcx`、專用金鑰 `id_ed25519_pcx`、`~/.ssh/
 
 ## 安全性與 OpenSSH 更新
 
-- 密碼登入在安裝時維持原樣（避免金鑰沒生效時把自己鎖在外面）。`pcx add` 確認金鑰可用後，執行 `pcx harden <名稱>` 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再驗證一次。
-- 來源限制：Windows 一律設定防火牆規則，只允許 `-AllowFrom` 的來源。Ubuntu **只有在 ufw 已啟用時**才會加規則；ufw 沒啟用（桌面版預設）時 22 埠對所有來源開放，請自行啟用 ufw 或依賴上層防火牆。
+- 密碼登入在安裝時維持原樣（避免金鑰沒生效時把自己鎖在外面）。`pcx add` 確認金鑰可用後，執行 `pcx harden <名稱>` 關閉密碼登入；它會先確認金鑰登入成功才動手，事後再確認金鑰仍可登入，並以不帶金鑰的連線確認 PC2 已不再提供 `password` / `keyboard-interactive`（沒關掉會回報 `HARDEN_NOT_EFFECTIVE`，不會標記為已關閉）。Ubuntu 的設定寫在 `/etc/ssh/sshd_config.d/00-pcx.conf`：sshd 對同一設定採用最先讀到的值，檔名排在最前面才不會被 `50-cloud-init.conf` 之類的檔案蓋過。用舊版 pcx harden 過的 Ubuntu，請重新執行一次 `pcx harden`。
+- 來源限制（`-AllowFrom`，預設 `LocalSubnet`）分三層：
+  1. **金鑰**：pcx 的公鑰在 PC2 上寫成 `from="<來源>",restrict ssh-ed25519 ... pcx`。私鑰就算外流，也不能從其他來源使用；`restrict` 關閉連接埠轉發、agent/X11 轉發與 pty（pcx 本來就不用這些）。`LocalSubnet` 在這裡代表私有網段（`10/8`、`172.16/12`、`192.168/16`、`169.254/16` 與 IPv6 的 `fc00::/7`、`fe80::/10`），PC2 換網路也不會被鎖在外面。
+  2. **sshd（Ubuntu）**：在 `sshd_config` 最後加上 `Match Address` 區塊，不在允許來源的連線一律不接受密碼登入。ufw 沒啟用也有效，移除時還原。
+  3. **防火牆**：Windows 一律設定防火牆規則；Ubuntu **只有在 ufw 已啟用時**才加規則。ufw 沒啟用（桌面版預設）時 22 埠仍對所有來源開放，但第 1、2 層照樣生效；這台電腦其他帳號的金鑰登入則不受限制，要在網路層擋掉請自行啟用 ufw。
+  - `-AllowFrom Any` 會略過第 1、2 層的來源限制（`restrict` 仍會加上）。經跳板機時，跳板機若也是用 pcx 安裝的 PC2，因為 `restrict` 禁止轉發，無法當跳板。
+  - 已經安裝過的 PC2 要套用新的限制，請用新版 `pcx invite` 重新產生安裝資料夾，在 PC2 再執行一次 `INSTALL.cmd` / `install.sh`（會更新同一把金鑰那一行，不會重複新增）。
 - 不用時執行 `pcx teardown <名稱>`，SSH 就不會一直開著，這是最有效的防護。
 - 腳本**不會自動升級** OpenSSH，只會在安裝結束時印出版本；Ubuntu 若有可用更新會提醒。
   - Ubuntu：評估後自行 `sudo apt install --only-upgrade openssh-server`；要在安裝時一起升級可加 `pcx invite ubuntu -UpgradeServer`（非互動、保留現有設定檔，但會重啟 sshd，並可能連帶升級 openssl/libc）。
@@ -155,7 +160,7 @@ PC1 會刪除 `pcx` 指令、`~\.pcx`、專用金鑰 `id_ed25519_pcx`、`~/.ssh/
 ## 注意
 
 - 登入後的權限：Windows 是管理員，Ubuntu 是安裝時執行 `install.sh` 的帳號（加了 `-PasswordlessSudo` 就等同 root）。
-- 專用金鑰 `~/.ssh/id_ed25519_pcx` 沒有加密碼（為了免輸入）。私鑰外洩就等於 PC2 被控制，請妥善保管；跨網路使用時建議搭配 VPN 或來源 IP 限制。
+- 專用金鑰 `~/.ssh/id_ed25519_pcx` 沒有加密碼（為了免輸入）。私鑰外洩就等於 PC2 被控制，請妥善保管；安裝時金鑰已加上 `from=` 來源限制（見上方「安全性」）；跨網路使用時建議搭配 VPN。
 - PC1 的 AI 沙盒（例如 Codex）預設可能擋網路，`ssh` 會被擋（`NETWORK_BLOCKED`、`KEY_UNREADABLE`），需放寬沙盒或用核准模式。
 - 網線直連沒設固定 IP 時，系統會自動配 `169.254.x.x`；安裝完成畫面會標註，建議改設固定 IP。
 - Windows PC2 的 SSH 預設 shell 會設成 PowerShell 7（沒有就用 Windows PowerShell），所以遠端指令用 PowerShell 語法。

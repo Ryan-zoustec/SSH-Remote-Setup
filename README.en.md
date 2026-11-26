@@ -88,9 +88,9 @@ Do what the "需要" (need) line says, then continue. An AI agent that sees this
 |---|---|
 | PC1 connection | `SSH_CLIENT_MISSING`, `HOST_NOT_REGISTERED`, `DUPLICATE_HOST`, `AUTH_REJECTED`, `UNREACHABLE`, `SSH_NOT_RUNNING`, `DNS_FAILED`, `HOSTKEY_CHANGED`, `KEY_UNREADABLE`, `NETWORK_BLOCKED`, `CONNECT_FAILED` |
 | Rights and execution | `NO_ADMIN`, `ADMIN_REQUIRED`, `SUDO_PASSWORD_REQUIRED`, `RUN_TIMEOUT` |
-| harden / removal | `HARDEN_PRECHECK_FAILED`, `HARDEN_NO_ADMIN`, `HARDEN_NO_SUDO`, `HARDEN_FAILED`, `HARDEN_VERIFY_FAILED`, `TEARDOWN_FAILED`, `UNINSTALL_PARTIAL` |
-| PC2 install (Windows) | `WINDOWS_CAPABILITY_QUERY_FAILED`, `OPENSSH_NOT_AVAILABLE`, `OPENSSH_INSTALL_FAILED`, `SSHD_START_FAILED`, `NO_IP_ADDRESS` |
-| PC2 install (Ubuntu) | `NOT_DEBIAN`, `NO_SYSTEMD`, `APT_FAILED`, `APT_UPGRADE_FAILED`, `SSHD_START_FAILED`, `SUDOERS_INVALID`, `NO_IP_ADDRESS` |
+| harden / removal | `HARDEN_PRECHECK_FAILED`, `HARDEN_NO_ADMIN`, `HARDEN_NO_SUDO`, `HARDEN_FAILED`, `HARDEN_VERIFY_FAILED`, `HARDEN_NOT_EFFECTIVE`, `TEARDOWN_FAILED`, `UNINSTALL_PARTIAL` |
+| PC2 install (Windows) | `INVALID_ALLOW_FROM`, `WINDOWS_CAPABILITY_QUERY_FAILED`, `OPENSSH_NOT_AVAILABLE`, `OPENSSH_INSTALL_FAILED`, `SSHD_START_FAILED`, `NO_IP_ADDRESS` |
+| PC2 install (Ubuntu) | `INVALID_ALLOW_FROM`, `NOT_DEBIAN`, `NO_SYSTEMD`, `APT_FAILED`, `APT_UPGRADE_FAILED`, `SSHD_START_FAILED`, `SUDOERS_INVALID`, `NO_IP_ADDRESS` |
 
 See `pcx help errors` for what each code means.
 
@@ -144,8 +144,13 @@ On PC1, the `pcx` command, `~\.pcx`, the dedicated key `id_ed25519_pcx` and pcx'
 
 ## Security and OpenSSH updates
 
-- Password login is left unchanged at install time (so you cannot lock yourself out if the key does not work). Once `pcx add` confirms the key works, run `pcx harden <name>` to disable password login. It verifies key login before changing anything and checks again afterwards.
-- Source restriction: on Windows a firewall rule always limits connections to the `-AllowFrom` sources. On Ubuntu a rule is added **only if ufw is already active**. When ufw is inactive (the desktop default), port 22 is open to every source, so enable ufw yourself or rely on an upstream firewall.
+- Password login is left unchanged at install time (so you cannot lock yourself out if the key does not work). Once `pcx add` confirms the key works, run `pcx harden <name>` to disable password login. It verifies key login before changing anything. Afterwards it checks that key login still works, and connects once without a key to confirm that PC2 no longer offers `password` or `keyboard-interactive` (if it still does, you get `HARDEN_NOT_EFFECTIVE` and the host is not marked as hardened). On Ubuntu the setting goes in `/etc/ssh/sshd_config.d/00-pcx.conf`: sshd uses the first value it reads for a setting, so the file must sort first or files such as `50-cloud-init.conf` override it. If you hardened an Ubuntu PC2 with an older pcx, run `pcx harden` again.
+- Source restriction (`-AllowFrom`, default `LocalSubnet`) works in three layers:
+  1. **Key**: pcx's public key is written on PC2 as `from="<sources>",restrict ssh-ed25519 ... pcx`. Even if the private key leaks, it cannot be used from any other source, and `restrict` disables port forwarding, agent/X11 forwarding and pty (pcx uses none of these). Here `LocalSubnet` means the private ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, plus IPv6 `fc00::/7` and `fe80::/10`), so PC2 moving to another network does not lock you out.
+  2. **sshd (Ubuntu)**: a `Match Address` block is appended to `sshd_config` so connections from outside the allowed sources cannot use password login. This works even when ufw is inactive and is undone on removal.
+  3. **Firewall**: on Windows a firewall rule is always set. On Ubuntu a rule is added **only if ufw is already active**. When ufw is inactive (the desktop default), port 22 stays open to every source, but layers 1 and 2 still apply; key logins for other accounts on that machine are not restricted, so enable ufw yourself to block at the network level.
+  - `-AllowFrom Any` skips the source limits in layers 1 and 2 (`restrict` is still added). A pcx-installed PC2 cannot serve as a jump host, because `restrict` forbids forwarding.
+  - To apply the new limits to a PC2 that is already installed, regenerate the install folder with the new `pcx invite` and run `INSTALL.cmd` / `install.sh` on PC2 again (it updates the existing key line instead of adding a second one).
 - Run `pcx teardown <name>` when you no longer need access so SSH is not left open. This is the most effective protection.
 - The scripts **never upgrade** OpenSSH automatically; they only print the version at the end of install, and Ubuntu also mentions available updates.
   - Ubuntu: upgrade yourself after reviewing, with `sudo apt install --only-upgrade openssh-server`, or add `-UpgradeServer` to `pcx invite ubuntu` to upgrade during install (non-interactive and keeps your config files, but restarts sshd and may pull in openssl/libc upgrades).
@@ -155,7 +160,7 @@ On PC1, the `pcx` command, `~\.pcx`, the dedicated key `id_ed25519_pcx` and pcx'
 ## Notes
 
 - Rights after login: an administrator on Windows; on Ubuntu, the account that ran `install.sh` (root-equivalent with `-PasswordlessSudo`).
-- The dedicated key `~/.ssh/id_ed25519_pcx` has no passphrase (so no typing is needed). Anyone holding the private key controls PC2, so protect it. Across networks, pair pcx with a VPN or source-IP restrictions.
+- The dedicated key `~/.ssh/id_ed25519_pcx` has no passphrase (so no typing is needed). Anyone holding the private key controls PC2, so protect it. The key is installed with a `from=` source limit (see Security above); across networks, pair pcx with a VPN.
 - AI sandboxes on PC1 (such as Codex) may block network access by default, which stops `ssh` (`NETWORK_BLOCKED`, `KEY_UNREADABLE`). Loosen the sandbox or use an approval mode.
 - On a direct cable without static IPs, the OS assigns `169.254.x.x`; the install summary marks these, and static IPs are recommended.
 - The SSH default shell on a Windows PC2 is set to PowerShell 7 (or Windows PowerShell if 7 is missing), so remote commands use PowerShell syntax.
