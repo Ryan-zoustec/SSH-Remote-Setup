@@ -299,6 +299,11 @@ function Find-SameHost($t, [string]$except, [switch]$SameUser) {
         $o.host -eq $t.host -and $o.port -eq $t.port -and $o.jump -eq $t.jump -and (-not $SameUser -or $o.user -eq $t.user)
     } | Sort-Object)
 }
+# 確認提示：只有明確回答 y 才算同意。stdin 為空或已到 EOF 時 Read-Host 不回傳任何值，一律當成「否」
+function Confirm-Yes([string]$prompt) {
+    $v = Read-Host $prompt
+    return ("$v" -match '^[yY]')
+}
 function Show-Usage {
     $self = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
     $t = Get-Content $self -Raw
@@ -1184,7 +1189,7 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
     if ($held.Count) { Write-Host "`n保留 (離線、可能只是關機；它們可能仍留有你的金鑰，移除註冊後就無法再用 pcx teardown): $($held -join ', ')。確定不再使用請加 -IncludeOffline。" }
     if ($drop.Count -eq 0) { "`n沒有需要清理的項目。"; break }
     Write-Host "`n將取消註冊 (本機設定與 known_hosts 紀錄): $($drop -join ', ')"
-    if (-not $Yes) { if ((Read-Host '確定? (y/N)') -notmatch '^[yY]') { '已取消。'; exit 0 } }
+    if (-not $Yes) { if (-not (Confirm-Yes '確定? (y/N)')) { '已取消。'; exit 0 } }
     foreach ($n in $drop) { Forget-KnownHost $n; Remove-ConfigBlock $n; $h.Remove($n) }
     Save-Hosts $h
     "已清理 $($drop.Count) 台，剩餘 $($h.Count) 台。"
@@ -1198,7 +1203,7 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
     if ($others.Count) {
         Write-Host "注意: $($others -join ', ') 也指向同一台主機 ($($t.host))。teardown 會移除這台主機上 pcx 的金鑰、防火牆規則與 SSH 設定，移除後 $($others -join ', ') 也會失效，並會一併取消註冊。" -ForegroundColor Yellow
         Write-Host "若只是要刪掉多出來的名稱，請改用 pcx forget <名稱> (不連到 PC2)。"
-        if (-not $Yes) { if ((Read-Host '確定要繼續 teardown? (y/N)') -notmatch '^[yY]') { '已取消。'; exit 0 } }
+        if (-not $Yes) { if (-not (Confirm-Yes '確定要繼續 teardown? (y/N)')) { '已取消。'; exit 0 } }
     }
     if (Invoke-Teardown $A) {
         $gone = @($A) + $others
@@ -1218,7 +1223,7 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
     elseif ($names.Count)       { Write-Host "  - 不會動遠端電腦 ($($names -join ', '))，它們仍開著 SSH。要一併移除請加 -All" }
     Write-Host "  - 刪除本機: pcx 指令、$PcxDir、專用金鑰 id_ed25519_pcx、~/.ssh/config 中的 pcx 區塊"
     if (-not $Yes) {
-        if ((Read-Host '確定要執行? (y/N)') -notmatch '^[yY]') { '已取消。'; exit 0 }
+        if (-not (Confirm-Yes '確定要執行? (y/N)')) { '已取消。'; exit 0 }
     }
     $failed = @()
     if ($All) {
