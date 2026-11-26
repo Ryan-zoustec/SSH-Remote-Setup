@@ -869,6 +869,15 @@ switch ($Cmd) {
     if (($env:Path -split ';') -contains $npm -and (Test-Path $npm)) { $shimDir = $npm } else { $shimDir = $PcxDir }
     $shim = "@echo off`r`npwsh -NoProfile -File `"%USERPROFILE%\.pcx\pcx.ps1`" %*"
     Set-Content (Join-Path $shimDir 'pcx.cmd') $shim -Encoding ascii
+    # PowerShell 會優先使用同資料夾的 pcx.ps1。cmd 的 %* 遇到換行就截斷參數，多行指令會只剩第一行，
+    # 所以從 PowerShell 呼叫時改走這個 .ps1 入口，參數原樣傳入。
+    $psShim = @'
+if ($PSVersionTable.PSVersion.Major -ge 7) { & "$HOME\.pcx\pcx.ps1" @args }
+else { pwsh -NoProfile -File "$HOME\.pcx\pcx.ps1" @args }
+exit $LASTEXITCODE
+'@
+    # shimDir 是 ~\.pcx 時，那裡的 pcx.ps1 就是本體，PowerShell 會直接用它，不可覆蓋
+    if ($shimDir -ne $PcxDir) { Set-Content (Join-Path $shimDir 'pcx.ps1') $psShim -Encoding utf8BOM }
     if ($shimDir -eq $PcxDir) {
         $up = [Environment]::GetEnvironmentVariable('Path', 'User')
         if (($up -split ';') -notcontains $PcxDir) { [Environment]::SetEnvironmentVariable('Path', "$up;$PcxDir", 'User') }
@@ -1062,12 +1071,15 @@ rm -f "$tmp"
     $os = if ($r.Code -eq 0 -and $text -match 'Linux') { 'linux' } else { 'windows' }
 
     # 管理員 / sudo 檢查
+    # 注意：不可用 $a 當變數名稱。PowerShell 變數不分大小寫，$a 就是腳本參數 [string]$A，
+    # 指派物件會被轉成字串，.Out 永遠是空的，結果一律判定為「沒有」。
     if ($os -eq 'linux') {
-        $a = Invoke-Capture -CmdArgs (@(Get-SshOpts) + @('-T', $name, 'sudo -n true 2>&1 && echo PCX_SUDO_OK')) -TimeoutSec 30
-        $isAdmin = ($a.Out -match 'PCX_SUDO_OK')
+        $adm = Invoke-Capture -CmdArgs (@(Get-SshOpts) + @('-T', $name, 'sudo -n true 2>&1 && echo PCX_SUDO_OK')) -TimeoutSec 30
+        $isAdmin = ($adm.Out -match 'PCX_SUDO_OK')
     } else {
-        $a = Invoke-Capture -CmdArgs (@(Get-SshOpts) + @('-T', $name, 'whoami /groups')) -TimeoutSec 30
-        $isAdmin = ($a.Out -match 'S-1-5-32-544') -and ($a.Out -match 'Mandatory Label\\High')
+        $adm = Invoke-Capture -CmdArgs (@(Get-SshOpts) + @('-T', $name, 'whoami /groups')) -TimeoutSec 30
+        # 用 SID 判斷，不受語系影響：S-1-5-32-544 = Administrators，S-1-16-12288 = 高完整性 (已提升)
+        $isAdmin = ($adm.Out -match 'S-1-5-32-544') -and ($adm.Out -match 'S-1-16-12288')
     }
     $h = Get-Hosts; $h[$name] = @{ os = $os; admin = [bool]$isAdmin }; Save-Hosts $h
     Write-Host "連線成功 ($os，管理員權限: $(if ($isAdmin) { '有' } else { '沒有' }))。現在可執行: pcx $name `"hostname`""
@@ -1085,9 +1097,17 @@ rm -f "$tmp"
     $info = Assert-Host $name
     if (-not $command -and -not $File) { throw '用法: pcx <名稱> "<指令>"  或  pcx <名稱> -File script' }
     $o = @(Get-SshOpts) + @('-T', $name)
+    # 腳本走 stdin。Windows：由 PC2 的預設 shell (pcx 安裝時設為 PowerShell) 讀完整段 stdin，
+    # 當成一個腳本區塊執行。這樣跨行的 if/foreach 區塊與 exit N 的結束碼都正確；
+    # 舊做法 powershell -Command - 是逐行讀取，跨行區塊會不執行，結束碼也會遺失。
+    $remote = if ($info.os -eq 'linux') { 'bash -s' } else {
+        '$ProgressPreference = ''SilentlyContinue''; if ($PSStyle) { $PSStyle.OutputRendering = ''PlainText'' }; [Console]::InputEncoding = [Text.UTF8Encoding]::new($false); & ([scriptblock]::Create([Console]::In.ReadToEnd()))'
+    }
     if ($File) {
-        $remote = if ($info.os -eq 'linux') { 'bash -s' } else { 'powershell -NoProfile -Command -' }
         $r = Invoke-Capture -CmdArgs ($o + @($remote)) -StdIn (Get-Content -LiteralPath $File -Raw)
+    } elseif ($command -match '[\r\n]') {
+        # 多行指令當成 ssh 參數時，Windows OpenSSH 只會執行第一行，其餘被靜默丟掉；改走 stdin
+        $r = Invoke-Capture -CmdArgs ($o + @($remote)) -StdIn $command
     } else {
         $r = Invoke-Capture -CmdArgs ($o + @($command))
     }
@@ -1272,7 +1292,7 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
 'uninstall' {
     $h = Get-Hosts
     $names = @($h.Keys)
-    $shims = @((Join-Path $env:APPDATA 'npm\pcx.cmd'), (Join-Path $PcxDir 'pcx.cmd'))
+    $shims = @((Join-Path $env:APPDATA 'npm\pcx.cmd'), (Join-Path $env:APPDATA 'npm\pcx.ps1'), (Join-Path $PcxDir 'pcx.cmd'))
     Write-Host '即將執行:'
     if ($All -and $names.Count) { Write-Host "  - 移除這些遠端電腦上的 SSH 存取: $($names -join ', ')" }
     elseif ($names.Count)       { Write-Host "  - 不會動遠端電腦 ($($names -join ', '))，它們仍開著 SSH。要一併移除請加 -All" }
