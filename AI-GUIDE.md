@@ -84,6 +84,7 @@ pcx add pc2 <使用者>@<IP>
 
 - 成功：印出「連線成功 (windows|linux，管理員權限: 有/沒有)」。
 - 失敗：會印出 `[errorRequest:...]`，依上方規則停下來轉告使用者。
+- 若出現 `DUPLICATE_HOST`：這台電腦（同位址、埠、帳號）已經用別的名稱註冊過，直接用那個名稱操作即可，不要加 `-Force` 另建名稱；同一台有兩個名稱時，teardown 其中一個會讓另一個也失效。
 - 若顯示「管理員權限: 沒有」並出現 `NO_ADMIN` 的 errorRequest：需要 root/管理員的操作會失敗，請使用者決定要換管理員帳號、設定免密碼 sudo，或接受只做不需權限的操作。
 
 ### 步驟 F：驗證可用，並告知使用者
@@ -111,7 +112,8 @@ pcx pc2 "<指令>"                  # Windows 遠端用 PowerShell 語法；linu
 pcx pc2 -File .\script.ps1        # 多行腳本（遠端是 linux 則用 .sh）
 pcx put pc2 <本機路徑> <遠端路徑>    # 上傳（Windows 遠端路徑用 C:/temp/x 形式）
 pcx get pc2 <遠端路徑> <本機路徑>    # 下載
-pcx list                           # 已註冊的電腦、作業系統與 admin/sudo 狀態
+pcx list                           # 已註冊的電腦、連線目標、作業系統與 admin/sudo 狀態（同一台有多個名稱會標出）
+pcx forget <名稱>                  # 只刪 PC1 本機的註冊紀錄，不連到 PC2（要刪多出來的名稱時用這個，不要用 teardown）
 pcx status [名稱]                  # 檢測是否存活：在線 / 金鑰被拒 / SSH 未開 / 離線
 pcx clean                          # 清理遠端存取已不存在的註冊（離線的預設保留；加 -IncludeOffline 需先問使用者）
 ```
@@ -141,7 +143,8 @@ pcx clean                          # 清理遠端存取已不存在的註冊（�
 ## 5. 用完要收尾
 
 - 作業告一段落、之後不再需要時，**建議**使用者移除遠端存取（SSH 不要一直開著）：
-  - 只移除某台：`pcx teardown pc2`
+  - 只移除某台：`pcx teardown pc2`（若還有其他名稱指向同一台，會警告並要求確認，確認後一併取消註冊）
+  - 只刪 PC1 上多出來的名稱、不動 PC2：`pcx forget pc2`
   - 全部清乾淨（PC2 與 PC1）：`pcx uninstall -All -Yes`
   - PC1 不在手邊時，在 PC2 執行安裝檔並加參數：Windows 執行資料夾裡的 `REMOVE.cmd`（右鍵以系統管理員身分執行）、Ubuntu `bash remove.sh`
 - 這些會改變 PC2 設定，須取得使用者明確同意後才執行；執行後回報結果。

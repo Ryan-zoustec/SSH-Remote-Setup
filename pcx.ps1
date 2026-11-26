@@ -13,14 +13,15 @@
   pcx put <名稱> <本機路徑> <遠端路徑>  上傳檔案或資料夾
   pcx get <名稱> <遠端路徑> <本機路徑>  下載檔案或資料夾
   pcx harden <名稱>                    確認金鑰可用後，關閉 PC2 的密碼登入 (只留金鑰)
-  pcx list | pcx remove <名稱>         列出 (含 admin 狀態) / 只取消本機註冊
+  pcx list                             列出已註冊的電腦 (含連線目標與 admin 狀態)
+  pcx forget <名稱>                    只刪 PC1 本機的註冊紀錄，不連到 PC2 (舊名 pcx remove 仍可用)
   pcx status [名稱]                    檢測已註冊的電腦是否存活 (平行檢測，約 5 秒內完成；有離線時結束碼為 1)
   pcx clean                            一鍵清理：取消註冊「遠端存取已不存在」的電腦 (離線的預設保留，加 -IncludeOffline 才一併清)
   pcx teardown <名稱>                  一鍵移除 PC2 上的遠端存取 (金鑰、防火牆、SSH 設定都還原)，並取消註冊
   pcx uninstall -All -Yes              一鍵全部移除：所有 PC2 的遠端存取 + PC1 上的 pcx 與金鑰
   pcx agents                           在目前資料夾的 AGENTS.md 加入給 AI 的使用說明
 
-  add 的選項:    -Port 22  -Key <已有的私鑰，例如雲端 VM 的 .pem>  -Jump <user@跳板機>
+  add 的選項:    -Port 22  -Key <已有的私鑰，例如雲端 VM 的 .pem>  -Jump <user@跳板機>  -Force (同一台已用別的名稱註冊時仍要新增)
   invite 的選項: -AllowFrom <LocalSubnet | 192.168.1.0/24 | 100.64.0.0/10 | Any>  -DisablePassword (安裝時就關閉密碼登入，建議改用 pcx harden)
                  -UpgradeServer (Ubuntu：順便升級 openssh-server)  -PasswordlessSudo (Ubuntu：授權免密碼 sudo，等同 root，請謹慎)  -Out <名稱>
   執行的選項:    -RunTimeout 120 (遠端指令總逾時秒數)  -Timeout 60 (連線逾時)  -Encoding utf-8 (遠端輸出亂碼時改 950)
@@ -59,7 +60,7 @@ $HostsFile  = Join-Path $PcxDir 'hosts.json'
 $SshDir     = Join-Path $HOME '.ssh'
 $SshConfig  = Join-Path $SshDir 'config'
 $DefaultKey = Join-Path $SshDir 'id_ed25519_pcx'
-$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide', 'wizard'
+$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'forget', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide', 'wizard'
 
 # ---------------------------------------------------------------------------
 # errorRequest：pcx 無法自行解決時，輸出固定格式的區塊，請使用者(或 AI 轉告使用者)處理
@@ -261,6 +262,43 @@ function Forget-KnownHost($name) {
     $hn = & ssh -G $name 2>$null | Where-Object { $_ -match '^hostname ' } | Select-Object -First 1
     if ($hn) { ssh-keygen -R ($hn -replace '^hostname ', '') *> $null }
 }
+# 讀 ~/.ssh/config 裡 pcx 的區塊，回傳 名稱 -> 連線目標 @{ host; user; port; jump }
+function Get-HostTargets {
+    $map = @{}
+    if (-not (Test-Path $SshConfig)) { return $map }
+    $txt = Get-Content $SshConfig -Raw
+    if (-not $txt) { return $map }
+    foreach ($m in [regex]::Matches($txt, '(?ms)^# >>> pcx (\S+) >>>\r?\n(.*?)^# <<< pcx \1 <<<')) {
+        $t = @{ host = ''; user = ''; port = '22'; jump = '' }
+        foreach ($line in ($m.Groups[2].Value -split '\r?\n')) {
+            if     ($line -match '^\s*HostName\s+(\S+)')  { $t.host = $Matches[1].ToLower() }
+            elseif ($line -match '^\s*User\s+(\S+)')      { $t.user = $Matches[1] }
+            elseif ($line -match '^\s*Port\s+(\d+)')      { $t.port = $Matches[1] }
+            elseif ($line -match '^\s*ProxyJump\s+(\S+)') { $t.jump = $Matches[1].ToLower() }
+        }
+        $map[$m.Groups[1].Value] = $t
+    }
+    return $map
+}
+function New-HostTarget([string]$hostName, [string]$user, [string]$port, [string]$jump) {
+    @{ host = "$hostName".ToLower(); user = "$user"; port = $(if ($port) { "$port" } else { '22' }); jump = "$jump".ToLower() }
+}
+function Format-Target($t) {
+    $s = if ($t.user) { "$($t.user)@$($t.host)" } else { $t.host }
+    if ($t.port -ne '22') { $s += ":$($t.port)" }
+    if ($t.jump) { $s += " (經 $($t.jump))" }
+    return $s
+}
+# 找出指向同一台主機 (位址 + 埠 + 跳板機相同) 的其他已註冊名稱；-SameUser 時帳號也要相同
+# 只比對註冊時填的位址，同一台用 IP 與電腦名稱分別註冊時偵測不到
+function Find-SameHost($t, [string]$except, [switch]$SameUser) {
+    if (-not $t -or -not $t.host) { return @() }
+    $all = Get-HostTargets; $reg = Get-Hosts
+    @($all.Keys | Where-Object { $_ -ne $except -and $reg.ContainsKey($_) } | Where-Object {
+        $o = $all[$_]
+        $o.host -eq $t.host -and $o.port -eq $t.port -and $o.jump -eq $t.jump -and (-not $SameUser -or $o.user -eq $t.user)
+    } | Sort-Object)
+}
 function Show-Usage {
     $self = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
     $t = Get-Content $self -Raw
@@ -365,7 +403,7 @@ env = @'
 雲端不要把 22 埠對全網際網路開放：安全群組只允許你的固定 IP，或改走 VPN。
 
 參數一覽：
-  add       -Port 22  -Key <私鑰>  -Jump <user@跳板機>
+  add       -Port 22  -Key <私鑰>  -Jump <user@跳板機>  -Force (同一台已用別的名稱註冊時仍要新增)
   invite    -AllowFrom <LocalSubnet | 網段 | 100.64.0.0/10 | Any>  -DisablePassword  -UpgradeServer
             -PasswordlessSudo (僅 Ubuntu，等同 root)  -SingleFile  -Out <名稱>
   執行      -RunTimeout 120 (遠端指令總逾時秒數)  -Timeout 60 (連線逾時)  -Encoding utf-8 (亂碼改 950)
@@ -377,10 +415,10 @@ daily = @'
   pcx pc2 -File .\fix.ps1                 在 PC2 執行本機腳本 (遠端是 linux 則用 .sh)
   pcx put pc2 .\app.zip C:/temp/app.zip   上傳 (Windows 遠端路徑用 C:/temp/x 形式)
   pcx get pc2 /var/log/syslog .\syslog    下載
-  pcx list                                已註冊的電腦、作業系統與 admin/sudo 狀態
+  pcx list                                已註冊的電腦、連線目標、作業系統與 admin/sudo 狀態 (同一台有多個名稱會標出)
   pcx status [名稱]                       平行檢測是否存活 (約 5 秒內)：在線 / 金鑰被拒 / SSH 未開 / 離線
   pcx clean                               清理「遠端存取已不存在」的註冊；離線的預設保留，確定不用再加 -IncludeOffline
-  pcx remove <名稱>                       只取消本機註冊 (不動 PC2)
+  pcx forget <名稱>                       只刪 PC1 本機的註冊紀錄，不連到 PC2 (舊名 pcx remove 仍可用)
   pcx agents                              在目前資料夾的 AGENTS.md 寫入給 AI 的用法
 
 輸出最後一行 [exit code: N] 是遠端指令的結束碼，非 0 代表失敗。
@@ -388,7 +426,8 @@ daily = @'
 所以請用非互動寫法 (apt -y、sudo -n)。中文 Windows 輸出若亂碼，加 -Encoding 950。
 '@
 remove = @'
-  只移除某台 PC2 的遠端存取          pcx teardown pc2
+  只移除某台 PC2 的遠端存取          pcx teardown pc2   (同一台還有其他名稱時會警告，確認後一併取消註冊)
+  只刪 PC1 的註冊、不動 PC2          pcx forget pc2
   全部清乾淨 (所有 PC2 + PC1)        pcx uninstall -All -Yes
   只清 PC1，不動 PC2                 pcx uninstall -Yes
   連 OpenSSH Server 也一併卸載       加 -UninstallServer
@@ -593,6 +632,14 @@ function Read-HostName([hashtable]$h) {
         return $n
     }
 }
+# 防呆：這組 帳號@位址:埠 已經用別的名稱註冊過時，提示並回傳已存在的名稱
+function Find-WizardDuplicate([string]$name, [string]$user, [string]$ip, [string]$port, [string]$jump) {
+    $t = New-HostTarget $ip $user $port $jump
+    $dup = @(Find-SameHost $t $name -SameUser)
+    if (-not $dup.Count) { return $null }
+    Write-Host "`n$(Format-Target $t) 已經註冊為 $($dup -join ', ')。同一台電腦不需要兩個名稱：之後對其中一個 teardown，另一個也會跟著失效。" -ForegroundColor Yellow
+    return $dup[0]
+}
 
 function Start-WizardNewHost {
     $os = Read-Menu "`nPC2 是什麼系統?" @('Windows', 'Ubuntu')
@@ -619,6 +666,10 @@ function Start-WizardNewHost {
         $ip   = Read-Answer 'VM 的公網 IP 或網域'
         while (-not (Test-Path -LiteralPath ($pem = Read-Answer '.pem 私鑰檔的路徑'))) { Write-Host '找不到這個檔案，請再輸入一次。' }
         $port = Read-Answer 'SSH 埠' '22'
+        if ($d = Find-WizardDuplicate $name $user $ip $port '') {
+            if (Read-YesNo "直接沿用 $d (不另外建立 $name)?" $true) { Complete-WizardHost $d }
+            return
+        }
         if (Stop-OnErrorRequest (Invoke-PcxStep @('add', $name, "$user@$ip", '-Key', $pem, '-Port', $port))) { return }
         Complete-WizardHost $name
         return
@@ -655,9 +706,15 @@ function Start-WizardNewHost {
         $user = Read-Answer 'PC2 的管理員帳號名稱'
         $ip   = Read-Answer 'PC2 畫面印出的 IP (或電腦名稱)'
         $argv = @('add', $name, "$user@$ip")
-        if ($conn -eq 5) { $argv += @('-Jump', (Read-Answer '跳板機 (使用者@主機)')) }
+        $jump = ''
+        if ($conn -eq 5) { $jump = Read-Answer '跳板機 (使用者@主機)'; $argv += @('-Jump', $jump) }
         $port = Read-Answer 'SSH 埠' '22'
         if ($port -ne '22') { $argv += @('-Port', $port) }
+        if ($d = Find-WizardDuplicate $name $user $ip $port $jump) {
+            if (Read-YesNo "直接沿用 $d (不另外建立 $name)?" $true) { Complete-WizardHost $d; return }
+            if (-not (Read-YesNo '要重新輸入帳號/IP 嗎?' $true)) { return }
+            continue
+        }
         $code = Invoke-PcxStep $argv
         if ($code -eq 0) { break }
         [void](Stop-OnErrorRequest $code)
@@ -688,7 +745,8 @@ function Complete-WizardHost([string]$name) {
 
 function Select-WizardHost([hashtable]$h) {
     $names = @($h.Keys | Sort-Object)
-    $i = Read-Menu "`n選一台電腦:" ($names | ForEach-Object { '{0}  ({1})' -f $_, $h[$_].os })
+    $tg = Get-HostTargets
+    $i = Read-Menu "`n選一台電腦:" ($names | ForEach-Object { '{0}  ({1}, {2})' -f $_, $h[$_].os, $(if ($tg[$_]) { Format-Target $tg[$_] } else { '?' }) })
     if ($i -eq 0) { return $null }
     return $names[$i - 1]
 }
@@ -719,7 +777,7 @@ function Start-Wizard {
     while ($true) {
         $h = Get-Hosts
         $items = @('新增一台 PC2 (完整流程)')
-        if ($h.Count) { $items += @('檢查已註冊的電腦是否在線', '關閉某台的密碼登入 (harden)', '移除某台 PC2 的遠端存取 (teardown)') }
+        if ($h.Count) { $items += @('檢查已註冊的電腦是否在線', '關閉某台的密碼登入 (harden)', '移除某台 PC2 的遠端存取 (teardown)', '只刪本機的註冊名稱，不動 PC2 (forget)') }
         $items += '顯示目前進度 (pcx guide)'
         $c = Read-Menu "`n要做什麼? (q 離開)" $items
         if ($c -eq 0) { Write-Host '再見。'; return }
@@ -734,9 +792,18 @@ function Start-Wizard {
                 $n = Select-WizardHost $h
                 if ($n) {
                     Write-Host "會移除 $n 上 pcx 的金鑰、防火牆規則與 SSH 設定 (依安裝前狀態還原)，並取消本機註冊。"
-                    if ((Read-Answer "確定請輸入電腦名稱 $n") -ceq $n) { [void](Stop-OnErrorRequest (Invoke-PcxStep @('teardown', $n))) }
+                    $tg = Get-HostTargets; $others = @(Find-SameHost $tg[$n] $n)
+                    if ($others.Count) {
+                        Write-Host "注意: $($others -join ', ') 也指向同一台主機，移除後 $($others -join ', ') 也會失效，並一併取消註冊。" -ForegroundColor Yellow
+                        Write-Host "如果只是想刪掉多出來的名稱，請改選「只刪本機的註冊名稱，不動 PC2 (forget)」。"
+                    }
+                    if ((Read-Answer "確定請輸入電腦名稱 $n") -ceq $n) { [void](Stop-OnErrorRequest (Invoke-PcxStep @('teardown', $n, '-Yes'))) }
                     else { Write-Host '名稱不符，已取消。' }
                 }
+            }
+            '只刪本機的註冊名稱，不動 PC2 (forget)' {
+                $n = Select-WizardHost $h
+                if ($n -and (Read-YesNo "只刪除 PC1 上 $n 的註冊紀錄 (不連到 PC2，PC2 的設定不變)?" $true)) { [void](Stop-OnErrorRequest (Invoke-PcxStep @('forget', $n))) }
             }
             '顯示目前進度 (pcx guide)'      { [void](Invoke-PcxStep @('guide')) }
         }
@@ -911,8 +978,21 @@ rm -f "$tmp"
     if (-not $name -or -not $target) { throw '用法: pcx add <名稱> <user@主機> [-Port 22] [-Key 私鑰] [-Jump user@跳板機]' }
     if ($name -notmatch '^[A-Za-z0-9_-]+$' -or $name -in $Verbs) { throw "名稱只能用英數字、- 、_，且不可與指令同名: $name" }
 
-    if ($Key) { $idFile = (Resolve-Path $Key).Path } else { Ensure-Key; $idFile = $DefaultKey }
     if ($target -match '^(.+)@(.+)$') { $user = $Matches[1]; $hostName = $Matches[2] } else { $user = $null; $hostName = $target }
+
+    # 防呆：同一台 (位址 + 埠 + 帳號 + 跳板機) 已經用別的名稱註冊過，就不再多建一個名稱
+    $newT = New-HostTarget $hostName $user $Port $Jump
+    $dup = @(Find-SameHost $newT $name -SameUser)
+    if ($dup.Count -and -not $Force) {
+        Write-ErrorRequest 'DUPLICATE_HOST' "$(Format-Target $newT) 已經註冊為 $($dup -join ', ')，不需要再用 $name 註冊一次。同一台電腦有兩個名稱時，對其中一個執行 pcx teardown 會移除整台的遠端存取，另一個名稱也會跟著失效。" "請直接使用 pcx $($dup[0]) `"<指令>`"。想改名請先 pcx forget $($dup[0])，再 pcx add $name $target；確定要兩個名稱並存才加 -Force。"
+        exit 1
+    }
+    $same = @(Find-SameHost $newT $name)
+    if ($same.Count) {
+        Write-Host "提醒: $($same -join ', ') 也指向同一台主機 ($($newT.host))。對其中任何一個執行 pcx teardown，都會移除這台主機的遠端存取，其他名稱也會失效。" -ForegroundColor Yellow
+    }
+
+    if ($Key) { $idFile = (Resolve-Path $Key).Path } else { Ensure-Key; $idFile = $DefaultKey }
 
     $lines = @("# >>> pcx $name >>>", "Host $name", "    HostName $hostName")
     if ($user) { $lines += "    User $user" }
@@ -1053,12 +1133,31 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
 'list' {
     $h = Get-Hosts
     if ($h.Count -eq 0) { '(尚未註冊任何電腦。用 pcx add <名稱> <user@主機>)'; break }
-    $h.GetEnumerator() | ForEach-Object { '{0,-16} {1,-8} admin/sudo: {2}' -f $_.Key, $_.Value.os, $(if ($_.Value.admin) { '有' } elseif ($null -eq $_.Value.admin) { '未檢查' } else { '沒有' }) }
+    $tg = Get-HostTargets
+    $h.GetEnumerator() | Sort-Object Key | ForEach-Object {
+        $t = $tg[$_.Key]
+        $line = '{0,-16} {1,-8} {2,-28} admin/sudo: {3}' -f $_.Key, $_.Value.os, $(if ($t) { Format-Target $t } else { '(ssh 設定中找不到)' }), $(if ($_.Value.admin) { '有' } elseif ($null -eq $_.Value.admin) { '未檢查' } else { '沒有' })
+        $same = @(Find-SameHost $t $_.Key)
+        if ($same.Count) { $line += "   [與 $($same -join ', ') 同一台主機]" }
+        $line
+    }
 }
 
-'remove' {
-    $h = Get-Hosts
-    if ($A) { Forget-KnownHost $A; Remove-ConfigBlock $A; $h.Remove($A); Save-Hosts $h; "已移除 $A (私鑰仍保留)" } else { throw '用法: pcx remove <名稱>' }
+{ $_ -in 'forget', 'remove' } {
+    # 只刪 PC1 本機的註冊紀錄 (hosts.json、~/.ssh/config 區塊、known_hosts)，不連到 PC2、不改 PC2 任何設定
+    if (-not $A) { throw '用法: pcx forget <名稱>' }
+    $h = Get-Hosts; $tg = Get-HostTargets
+    if (-not $h.ContainsKey($A) -and -not $tg.ContainsKey($A)) {
+        Write-ErrorRequest 'HOST_NOT_REGISTERED' "找不到已註冊的電腦 '$A'。" 'pcx list 可看已註冊的電腦。'
+        exit 1
+    }
+    $same = @(Find-SameHost $tg[$A] $A)
+    if (-not $same.Count) { Forget-KnownHost $A }   # 還有別的名稱指向同一台時，保留主機金鑰紀錄
+    Remove-ConfigBlock $A
+    $h.Remove($A); Save-Hosts $h
+    "已取消 $A 的本機註冊 (沒有連到 PC2；私鑰保留)。"
+    if ($same.Count) { "這台主機仍可用 $($same -join ', ') 操作。" }
+    else { '注意: PC2 上的遠端存取 (金鑰、防火牆、SSH) 仍保留。若不再使用，請到 PC2 執行 REMOVE.cmd / remove.sh，或重新 pcx add 後再 pcx teardown。' }
 }
 
 'status' {
@@ -1092,12 +1191,21 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
 }
 
 'teardown' {
-    if (-not $A) { throw '用法: pcx teardown <名稱> [-UninstallServer]' }
+    if (-not $A) { throw '用法: pcx teardown <名稱> [-UninstallServer] [-Yes]' }
+    [void](Assert-Host $A)
+    $t = (Get-HostTargets)[$A]
+    $others = @(Find-SameHost $t $A)
+    if ($others.Count) {
+        Write-Host "注意: $($others -join ', ') 也指向同一台主機 ($($t.host))。teardown 會移除這台主機上 pcx 的金鑰、防火牆規則與 SSH 設定，移除後 $($others -join ', ') 也會失效，並會一併取消註冊。" -ForegroundColor Yellow
+        Write-Host "若只是要刪掉多出來的名稱，請改用 pcx forget <名稱> (不連到 PC2)。"
+        if (-not $Yes) { if ((Read-Host '確定要繼續 teardown? (y/N)') -notmatch '^[yY]') { '已取消。'; exit 0 } }
+    }
     if (Invoke-Teardown $A) {
-        Forget-KnownHost $A
-        Remove-ConfigBlock $A
-        $h = Get-Hosts; $h.Remove($A); Save-Hosts $h
+        $gone = @($A) + $others
+        foreach ($n in $gone) { Forget-KnownHost $n; Remove-ConfigBlock $n }
+        $h = Get-Hosts; foreach ($n in $gone) { $h.Remove($n) }; Save-Hosts $h
         "已移除 $A 的遠端存取並取消註冊。"
+        if ($others.Count) { "同一台主機的 $($others -join ', ') 也已取消註冊。" }
     } else { exit 1 }
 }
 
@@ -1113,7 +1221,17 @@ Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
         if ((Read-Host '確定要執行? (y/N)') -notmatch '^[yY]') { '已取消。'; exit 0 }
     }
     $failed = @()
-    if ($All) { Assert-Ssh; foreach ($n in $names) { if (-not (Invoke-Teardown $n)) { $failed += $n } } }
+    if ($All) {
+        Assert-Ssh
+        $tg = Get-HostTargets; $seen = @{}
+        foreach ($n in $names) {
+            # 同一台主機只 teardown 一次 (第二次會因為遠端存取已移除而失敗)
+            $t = $tg[$n]; $k = if ($t -and $t.host) { "$($t.host)|$($t.port)|$($t.jump)" } else { "name:$n" }
+            if ($seen.ContainsKey($k)) { Write-Host "$n 與 $($seen[$k]) 是同一台主機，已一併處理。"; continue }
+            $seen[$k] = $n
+            if (-not (Invoke-Teardown $n)) { $failed += $n }
+        }
+    }
     if ($failed.Count -and -not $Force) {
         Write-ErrorRequest 'UNINSTALL_PARTIAL' "這些電腦的遠端移除失敗: $($failed -join ', ')。本機設定與金鑰先保留，避免之後無法再移除它們。" '請處理上方各電腦的 errorRequest 後重試；若確定要忽略 (遠端仍會留有你的金鑰授權)，可加 -Force 只清除本機。'
         exit 1

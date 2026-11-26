@@ -57,7 +57,7 @@ pcx 與安裝腳本遇到自己解決不了的問題（沒權限、連不上、�
   需要: ...
 ```
 
-代碼包括：`HOST_NOT_REGISTERED`、`AUTH_REJECTED`、`UNREACHABLE`、`SSH_NOT_RUNNING`、`DNS_FAILED`、`HOSTKEY_CHANGED`、`KEY_UNREADABLE`、`NETWORK_BLOCKED`、`ADMIN_REQUIRED`、`SUDO_PASSWORD_REQUIRED`、`NO_ADMIN`、`RUN_TIMEOUT`、`HARDEN_*`、`TEARDOWN_FAILED`、`UNINSTALL_PARTIAL`、`OPENSSH_INSTALL_FAILED`、`APT_FAILED`、`NO_SYSTEMD`、`NO_IP_ADDRESS` 等。看到這個區塊時，請照「需要」欄位處理後再繼續；AI 會停下來把內容轉告你。
+代碼包括：`HOST_NOT_REGISTERED`、`DUPLICATE_HOST`、`AUTH_REJECTED`、`UNREACHABLE`、`SSH_NOT_RUNNING`、`DNS_FAILED`、`HOSTKEY_CHANGED`、`KEY_UNREADABLE`、`NETWORK_BLOCKED`、`ADMIN_REQUIRED`、`SUDO_PASSWORD_REQUIRED`、`NO_ADMIN`、`RUN_TIMEOUT`、`HARDEN_*`、`TEARDOWN_FAILED`、`UNINSTALL_PARTIAL`、`OPENSSH_INSTALL_FAILED`、`APT_FAILED`、`NO_SYSTEMD`、`NO_IP_ADDRESS` 等。看到這個區塊時，請照「需要」欄位處理後再繼續；AI 會停下來把內容轉告你。
 
 ## 各種環境
 
@@ -79,7 +79,8 @@ pcx pc2 "Get-Service sshd"            # Windows 用 PowerShell 語法；Ubuntu �
 pcx pc2 -File .\fix.ps1               # 在 PC2 執行本機腳本
 pcx put pc2 .\app.zip C:/temp/app.zip # 上傳
 pcx get pc2 /var/log/syslog .\syslog  # 下載
-pcx list
+pcx list                              # 已註冊的電腦、連線目標與 admin 狀態；同一台有多個名稱會標出
+pcx forget pc2                        # 只刪 PC1 本機的註冊紀錄，不連到 PC2（舊名 pcx remove 仍可用）
 pcx status                            # 平行檢測所有已註冊電腦是否存活（約 5 秒內）
 pcx clean                             # 一鍵清理「遠端存取已不存在」的註冊；離線的預設保留，確定不用再加 -IncludeOffline
 pcx agents                            # 在目前資料夾的 AGENTS.md 寫入「請用 pcx 操作遠端」
@@ -92,6 +93,7 @@ pcx agents                            # 在目前資料夾的 AGENTS.md 寫入�
 | 想做的事 | 指令 |
 |---|---|
 | 只移除某台 PC2 的遠端存取 | `pcx teardown pc2` |
+| 只刪 PC1 上的某個名稱，不動 PC2 | `pcx forget pc2` |
 | **全部清乾淨（所有 PC2 + PC1）** | `pcx uninstall -All -Yes` |
 | 只清 PC1，不動 PC2 | `pcx uninstall -Yes` |
 | 連 OpenSSH Server 也一併卸載 | 加 `-UninstallServer` |
