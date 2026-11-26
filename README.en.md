@@ -12,9 +12,11 @@ Other docs (Traditional Chinese): [AI-GUIDE.md](AI-GUIDE.md) (rules for AI agent
 
 ## Setup
 
-### Easiest: the interactive wizard (Windows PC2)
+### Easiest: the windowed wizard (Windows PC2)
 
-Double-click `WIZARD.cmd` (or run `pcx wizard`). The wizard asks step by step and runs the commands for you: installing pcx, choosing the network setup, generating the install folder, telling you to run `INSTALL.cmd` on PC2, registering and testing, offering to disable password login, and writing `AGENTS.md`. For hosts already registered, its menu can check whether they are online, harden, teardown (you must type the host name to confirm) or forget them. The wizard never asks for or stores any password. If PC2 runs Ubuntu, the wizard points you to `pcx guide` instead.
+Double-click `WIZARD.cmd` (or run `pcx gui`) to open the windowed wizard: action buttons on the left, the list of registered hosts in the middle (target, admin rights, password login, online state), and the `pcx` commands each step runs, with their output, at the bottom. The window stays responsive while a step runs, and a Stop button cancels it. If you prefer a command-line Q&A, or the window will not open, double-click `WIZARD-TEXT.cmd` (`pcx wizard`) for the text version.
+
+Both versions do the same things: the wizard asks step by step and runs the commands for you: installing pcx, choosing the network setup, generating the install folder, telling you to run `INSTALL.cmd` on PC2, registering and testing, offering to disable password login, and writing `AGENTS.md`. For hosts already registered, its menu can check whether they are online, harden, teardown (you must type the host name to confirm) or forget them. The wizard never asks for or stores any password. If PC2 runs Ubuntu, the wizard points you to `pcx guide` instead.
 
 ### Manual (about 3 steps)
 
@@ -56,7 +58,8 @@ pcx guide            # shows how far setup has got (install → invite → PC2 i
 pcx guide pc2        # same, and also checks whether pc2 is online
 pcx help             # full manual
 pcx help errors      # a single topic: setup admin errors env daily remove security ai notes
-pcx wizard           # Windows wizard (for people; refuses to run in non-interactive terminals such as AI tools)
+pcx gui              # Windows windowed wizard (same as WIZARD.cmd; for people, refused inside AI tools)
+pcx wizard           # Windows text wizard (same as WIZARD-TEXT.cmd; for people, refused inside AI tools)
 ```
 
 `pcx guide` only reads state. It never prompts and never changes anything, so an AI CLI can run it safely.

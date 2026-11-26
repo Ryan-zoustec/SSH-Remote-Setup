@@ -2,7 +2,8 @@
 <#
   pcx - 在 PC1 上用一個指令管理並操作遠端電腦 (Windows / Ubuntu / 雲端 VM)。
 
-  pcx wizard                           Windows 互動精靈：一步步詢問並代為執行 (也可雙擊 WIZARD.cmd)
+  pcx gui                              Windows 視窗精靈 (雙擊 WIZARD.cmd 開啟)：按鈕操作新增 PC2、檢查在線、harden、teardown、forget
+  pcx wizard                           Windows 文字互動精靈：一步步詢問並代為執行 (也可雙擊 WIZARD-TEXT.cmd)
   pcx guide [名稱]                     引導流程：檢查目前做到哪一步，並告訴你下一個要執行的指令 (從這裡開始)
   pcx help [主題]                      完整中文使用說明；主題: setup admin errors env daily remove security ai notes
   pcx install                          安裝成全域指令 (只需一次)
@@ -54,13 +55,15 @@ param(
     [switch]$Force
 )
 $ErrorActionPreference = 'Stop'
+# 視窗精靈 (pcx gui) 以子行程呼叫 pcx 並用 UTF-8 讀取輸出；沒有主控台視窗時預設字碼頁不可靠，所以由它設定這個環境變數
+if ($env:PCX_UTF8_OUT) { try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { } }
 
 $PcxDir     = Join-Path $HOME '.pcx'
 $HostsFile  = Join-Path $PcxDir 'hosts.json'
 $SshDir     = Join-Path $HOME '.ssh'
 $SshConfig  = Join-Path $SshDir 'config'
 $DefaultKey = Join-Path $SshDir 'id_ed25519_pcx'
-$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'forget', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide', 'wizard'
+$Verbs      = 'install', 'add', 'run', 'put', 'get', 'harden', 'list', 'status', 'clean', 'remove', 'forget', 'teardown', 'uninstall', 'invite', 'agents', 'help', 'guide', 'wizard', 'gui'
 
 # ---------------------------------------------------------------------------
 # errorRequest：pcx 無法自行解決時，輸出固定格式的區塊，請使用者(或 AI 轉告使用者)處理
@@ -342,8 +345,8 @@ $GuideTitle = [ordered]@{
 }
 $GuideText = @{
 setup = @'
-最簡單：在 Windows 的 PC1 雙擊 WIZARD.cmd (或執行 pcx wizard)，互動精靈會一步步問你並代為執行下面的步驟；
-PC2 是 Ubuntu 時精靈會改帶你看 pcx guide。想自己打指令就照以下步驟，隨時可用 pcx guide 看進度。
+最簡單：在 Windows 的 PC1 雙擊 WIZARD.cmd (或執行 pcx gui)，視窗精靈會一步步問你並代為執行下面的步驟；
+喜歡文字介面可改雙擊 WIZARD-TEXT.cmd (pcx wizard)。PC2 是 Ubuntu 時精靈會改帶你看 pcx guide。想自己打指令就照以下步驟，隨時可用 pcx guide 看進度。
 
 PC1 = 你正在用的電腦 (Windows，需要 PowerShell 7 與 OpenSSH 客戶端)。
 PC2 = 要被操作的電腦 (Windows 或 Ubuntu)。PC2 只開 OpenSSH，不裝 AI、不登入帳號。
@@ -483,7 +486,7 @@ security = @'
 '@
 ai = @'
 (完整版見 AI-GUIDE.md；以下為重點)
-- pcx wizard 是給人用的互動精靈，AI 不要執行它 (非互動終端機會被拒絕)；AI 用 pcx guide 看進度。
+- pcx gui / pcx wizard 是給人用的精靈，AI 不要執行它們 (非互動終端機會被拒絕)；AI 用 pcx guide 看進度。
 - 操作 PC2 一律用 pcx <名稱> "<指令>"，不要改用其他連線方式；先 pcx status <名稱> 確認在線。
 - 讀最後一行 [exit code: N]，非 0 就是失敗，不可假裝成功。
 - 出現 [errorRequest:代碼]：立刻停止，把「問題」與「需要」原樣轉告使用者，等回覆後才繼續；
@@ -595,7 +598,7 @@ function Show-Wizard([string]$name) {
 
     ''
     '日常操作：pcx <名稱> "<指令>"、pcx <名稱> -File 腳本、pcx put/get、pcx status、pcx list   (pcx help daily)'
-    '想要一步步問答、代為執行：pcx wizard (Windows 互動精靈，也可雙擊 WIZARD.cmd)'
+    '想要一步步問答、代為執行：雙擊 WIZARD.cmd 開視窗精靈 (pcx gui)；文字版 pcx wizard (WIZARD-TEXT.cmd)'
     '用完收尾：pcx teardown <名稱> 移除某台；pcx uninstall -All -Yes 全部清乾淨          (pcx help remove)'
     '遇到 [errorRequest:代碼]：照「需要」處理後再繼續                                   (pcx help errors)'
     ''
@@ -850,6 +853,26 @@ if (-not $Cmd -or $Cmd -eq 'help') {
 }
 if ($Cmd -eq 'guide') { Show-Wizard $A; exit 0 }
 if ($Cmd -eq 'wizard') { Start-Wizard; exit 0 }
+if ($Cmd -eq 'gui') {
+    # 視窗精靈：pcx-gui.ps1 以 dot-source 載入，沿用本檔的函式；步驟仍以子行程執行 pcx <功能>
+    if (-not $IsWindows) { Write-Host '視窗精靈只在 Windows 上使用；請改用 pcx guide。'; exit 1 }
+    if ([Console]::IsInputRedirected -and -not $env:PCX_WIZARD_STDIN) {
+        Write-Host '偵測到不是互動式終端機 (例如 AI 工具在執行)。視窗精靈要由你親自操作；AI 請改用 pcx guide。'
+        exit 1
+    }
+    $gui = Join-Path $PSScriptRoot 'pcx-gui.ps1'
+    if (-not (Test-Path $gui)) { Write-Host "找不到 $gui。請到專案資料夾執行 pcx install 更新，或改用 pcx wizard (文字版)。"; exit 1 }
+    $PcxSelf = $PSCommandPath
+    try { . $gui }
+    catch {
+        # 視窗精靈由 WIZARD.cmd 以隱藏主控台啟動，錯誤要用對話框顯示，否則使用者什麼都看不到
+        $msg = "視窗精靈無法啟動，可改用文字版精靈 (WIZARD-TEXT.cmd 或 pcx wizard)。`n`n$($_.Exception.Message)"
+        Write-Host $msg
+        try { Add-Type -AssemblyName System.Windows.Forms; [void][Windows.Forms.MessageBox]::Show($msg, 'pcx', 'OK', 'Error') } catch { }
+        exit 1
+    }
+    exit 0
+}
 
 # ---- 非內建動詞 => 視為「pcx <名稱> "<指令>"」 -------------------------------
 if ($Cmd -notin $Verbs) { $B = $A; $A = $Cmd; $Cmd = 'run' }
@@ -868,7 +891,7 @@ switch ($Cmd) {
         else { Write-Warning "目前執行的是已安裝的副本 ($PcxDir)，沒有可更新的來源。要更新，請到專案資料夾執行 pcx install，或執行: pwsh -NoProfile -File <專案資料夾>\pcx.ps1 install" }
     }
     if ($src -ne (Resolve-Path $PcxDir).Path) {
-        Copy-Item (Join-Path $src '*.ps1'), (Join-Path $src '*.sh'), (Join-Path $src 'WIZARD.cmd') -Destination $PcxDir -Force
+        Copy-Item (Join-Path $src '*.ps1'), (Join-Path $src '*.sh'), (Join-Path $src 'WIZARD*.cmd') -Destination $PcxDir -Force
         Write-Host "已從 $src 複製最新版到 $PcxDir"
     }
     $npm = Join-Path $env:APPDATA 'npm'

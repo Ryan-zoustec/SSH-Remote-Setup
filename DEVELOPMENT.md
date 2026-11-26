@@ -17,7 +17,9 @@
 | 檔案 | 在哪台執行 | 作用 |
 |---|---|---|
 | `pcx.ps1` | PC1（PowerShell 7） | 主程式：安裝、產生 PC2 安裝資料夾、註冊、執行指令、傳檔、檢測、清理、移除 |
-| `WIZARD.cmd` | PC1（雙擊） | 啟動 `pcx wizard` 互動精靈 |
+| `WIZARD.cmd` | PC1（雙擊） | 啟動 `pcx gui` 視窗精靈（隱藏主控台） |
+| `WIZARD-TEXT.cmd` | PC1（雙擊） | 啟動 `pcx wizard` 文字互動精靈（備援） |
+| `pcx-gui.ps1` | PC1 | 視窗精靈本體（WinForms），由 `pcx gui` 以 dot-source 載入，不單獨執行 |
 | `setup-remote.ps1` | PC2 Windows（管理員） | 安裝/啟動 OpenSSH Server、防火牆、寫入公鑰、預設 shell，並記錄原狀態 |
 | `remove-remote.ps1` | PC2 Windows（管理員） | 依記錄的原狀態還原所有變更 |
 | `setup-remote.sh` | PC2 Ubuntu | 安裝 `openssh-server`、ufw、公鑰、可選免密碼 sudo，並記錄原狀態 |
@@ -27,6 +29,8 @@
 | `DEVELOPMENT.md` | — | 本文件 |
 
 使用說明內建於 `pcx.ps1`（`$GuideText` 各節，與 README / AI-GUIDE 內容一致；改文件時要一併更新）：`pcx help [主題]` 印出完整說明，`pcx guide [名稱]` 是唯讀的引導流程，依 PC1 環境、全域指令、金鑰、`hosts.json`（含 `admin`、`hardened` 欄位；`hardened` 由 `pcx harden` 驗證成功後寫入）與 `AGENTS.md` 判斷進度並印出下一步。`pcx wizard`（`WIZARD.cmd` 雙擊啟動）是 Windows 互動精靈：以 `Read-Host` 問答，每一步用子行程呼叫 `pcx <功能>`（子行程 stdin 為空，不會吃到使用者輸入），輸出含 `[errorRequest:` 時停下說明；偵測到 stdin 被重導（AI 工具）就拒絕執行，測試時可設 `PCX_WIZARD_STDIN=1` 以管線餵答案。PC2 選 Ubuntu 時改顯示 `pcx guide`。
+
+`pcx gui`（`WIZARD.cmd` 雙擊啟動）是同一套流程的 WinForms 視窗版，程式在 `pcx-gui.ps1`，由 `pcx.ps1` 以 dot-source 載入，所以直接沿用 `Get-Hosts`、`Get-HostTargets`、`Find-SameHost` 等函式做清單與重複主機防呆。每個步驟一樣以子行程執行 `pcx <功能>`（stdin 立即關閉，`Confirm-Yes` 一律當成「否」，所以 teardown 由視窗先要求輸入名稱再帶 `-Yes`）。子行程輸出不用 `DataReceived` 事件（那在別的執行緒，PowerShell 腳本區塊不能在那裡跑），而是 UI 執行緒上的 `Windows.Forms.Timer` 每 100 ms 輪詢 `ReadLineAsync`，視窗不會凍結；步驟完成後以 continuation 腳本區塊接續下一步。子行程設 `PCX_UTF8_OUT=1`，`pcx.ps1` 開頭據此把 `[Console]::OutputEncoding` 設成 UTF-8，避免沒有主控台視窗時字碼頁不確定造成中文亂碼。`WIZARD.cmd` 用 `start ... -WindowStyle Hidden` 啟動，載入失敗時 `pcx gui` 會跳對話框建議改用 `WIZARD-TEXT.cmd`。
 
 `pcx invite` 會把 `setup-*` / `remove-*` 原樣複製成「給 PC2 的明文資料夾」（`pcx-pc2-windows` 或 `pcx-pc2-ubuntu`，內含 `pcx.pub`、`INSTALL.cmd` / `install.sh`、`REMOVE.cmd` / `remove.sh`、`README.txt`）。`-SingleFile` 才會產生 base64 內嵌的單一檔案。
 

@@ -12,9 +12,11 @@ PC2 只開 OpenSSH（不裝 AI、不登入帳號）。PC1 用 `pcx <名稱> "<�
 
 ## 設定
 
-### 最簡單：互動精靈（PC2 是 Windows）
+### 最簡單：視窗精靈（PC2 是 Windows）
 
-雙擊 `WIZARD.cmd`（或執行 `pcx wizard`）。精靈會一步步詢問並代為執行：安裝 pcx、選連線環境、產生安裝資料夾、提示你到 PC2 執行 `INSTALL.cmd`、註冊並測試、詢問是否關閉密碼登入、寫入 `AGENTS.md`。已註冊的電腦也能從選單檢查在線、harden、teardown（要輸入電腦名稱確認）或 forget。精靈不會詢問或儲存任何密碼；PC2 是 Ubuntu 時，精靈會改帶你看 `pcx guide`。
+雙擊 `WIZARD.cmd`（或執行 `pcx gui`）會開啟視窗版精靈：左邊是動作按鈕、中間是已註冊電腦清單（連線目標、管理員權限、密碼登入、在線狀態）、下方顯示每一步實際執行的 `pcx` 指令與輸出。執行中視窗不會卡住，可隨時按「停止」。喜歡命令列問答，或視窗開不起來時，改雙擊 `WIZARD-TEXT.cmd`（`pcx wizard`）使用文字版。
+
+兩個版本功能相同：精靈會一步步詢問並代為執行：安裝 pcx、選連線環境、產生安裝資料夾、提示你到 PC2 執行 `INSTALL.cmd`、註冊並測試、詢問是否關閉密碼登入、寫入 `AGENTS.md`。已註冊的電腦也能從選單檢查在線、harden、teardown（要輸入電腦名稱確認）或 forget。精靈不會詢問或儲存任何密碼；PC2 是 Ubuntu 時，精靈會改帶你看 `pcx guide`。
 
 ### 手動（約 3 步）
 
@@ -56,7 +58,8 @@ pcx guide            # 檢查目前做到哪一步（安裝 → invite → PC2 �
 pcx guide pc2        # 同上，並實際檢測 pc2 是否在線
 pcx help             # 完整中文使用說明
 pcx help errors      # 只看某一節；主題：setup admin errors env daily remove security ai notes
-pcx wizard           # Windows 互動精靈（給人用；在 AI 工具等非互動終端機中會被拒絕）
+pcx gui              # Windows 視窗精靈（同 WIZARD.cmd；給人用，AI 工具中會被拒絕）
+pcx wizard           # Windows 文字互動精靈（同 WIZARD-TEXT.cmd；給人用，AI 工具中會被拒絕）
 ```
 
 `pcx guide` 只讀取狀態、不會詢問輸入也不會修改任何東西，AI CLI 也能安全執行。
