@@ -131,6 +131,12 @@ function Get-SshOpts {
     @('-o', 'BatchMode=yes', '-o', "ConnectTimeout=$Timeout", '-o', 'ServerAliveInterval=10',
       '-o', ('ServerAliveCountMax=' + [Math]::Max(1, [int]($Timeout / 10))))
 }
+# Windows 遠端：由 PC2 的預設 shell (PowerShell) 以 UTF-8 讀完整段 stdin，當成一個腳本區塊執行。
+# 不可改用 powershell -Command -：它用系統字碼頁 (中文 Windows 為 950) 逐行解碼 UTF-8，
+# 中文字的最後一個位元組會吃掉換行，把下一行併進註解或字串 (曾讓 harden 把 sshd_config 清成只剩兩行)。
+function Get-WinStdinRemote {
+    '$ProgressPreference = ''SilentlyContinue''; if ($PSStyle) { $PSStyle.OutputRendering = ''PlainText'' }; [Console]::InputEncoding = [Text.UTF8Encoding]::new($false); & ([scriptblock]::Create([Console]::In.ReadToEnd()))'
+}
 function Assert-Ssh {
     if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
         Write-ErrorRequest 'SSH_CLIENT_MISSING' '這台電腦找不到 ssh 指令 (OpenSSH 客戶端)。' '請安裝 OpenSSH 客戶端: 設定 > 應用程式 > 選用功能 > 新增功能 > OpenSSH 用戶端；安裝後重開終端機。'
@@ -228,9 +234,9 @@ Register-ScheduledTask -TaskName 'pcx-remove' -Action $act -User 'SYSTEM' -RunLe
 Start-ScheduledTask -TaskName 'pcx-remove'
 Write-Host '已排程移除，約 3 秒後 PC2 的 SSH 會關閉。'
 '@
-        $remote = 'powershell -NoProfile -Command -'
+        $remote = Get-WinStdinRemote
     }
-    $launcher = ($tpl -replace "`r`n", "`n").Replace('@@B64@@', $b64).Replace('@@FLAGS@@', $flags)
+    $launcher =($tpl -replace "`r`n", "`n").Replace('@@B64@@', $b64).Replace('@@FLAGS@@', $flags)
     $r = Invoke-Capture -CmdArgs (@($o) + @('-T', $name, $remote)) -StdIn $launcher -TimeoutSec 60
     Write-Host ($r.Out + $r.Err).Trim()
     if ($r.Code -ne 0) {
@@ -1100,9 +1106,7 @@ rm -f "$tmp"
     # 腳本走 stdin。Windows：由 PC2 的預設 shell (pcx 安裝時設為 PowerShell) 讀完整段 stdin，
     # 當成一個腳本區塊執行。這樣跨行的 if/foreach 區塊與 exit N 的結束碼都正確；
     # 舊做法 powershell -Command - 是逐行讀取，跨行區塊會不執行，結束碼也會遺失。
-    $remote = if ($info.os -eq 'linux') { 'bash -s' } else {
-        '$ProgressPreference = ''SilentlyContinue''; if ($PSStyle) { $PSStyle.OutputRendering = ''PlainText'' }; [Console]::InputEncoding = [Text.UTF8Encoding]::new($false); & ([scriptblock]::Create([Console]::In.ReadToEnd()))'
-    }
+    $remote = if ($info.os -eq 'linux') { 'bash -s' } else { Get-WinStdinRemote }
     if ($File) {
         $r = Invoke-Capture -CmdArgs ($o + @($remote)) -StdIn (Get-Content -LiteralPath $File -Raw)
     } elseif ($command -match '[\r\n]') {
@@ -1165,11 +1169,36 @@ $S systemctl reload ssh && echo "已關閉密碼登入 (只留金鑰)。"
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) { Write-Host '[errorRequest:HARDEN_NO_ADMIN]'; Write-Host '  問題: 這個帳號不是管理員，無法修改 sshd 設定。'; Write-Host '  需要: 請改用管理員帳號重新註冊後再執行 pcx harden，或在 PC2 本機修改 sshd_config。'; exit 3 }
 $cfg = Join-Path $env:ProgramData 'ssh\sshd_config'
+# 密碼與 keyboard-interactive 都關掉 (設定行不存在時插在第一個 Match 之前，確保是全域設定)
+$orig = @(Get-Content $cfg)
+if ($orig.Count -lt 3) { Write-Host '[errorRequest:HARDEN_FAILED]'; Write-Host "  問題: 讀到的 sshd_config 只有 $($orig.Count) 行，看起來不完整，為避免寫壞設定已中止，密碼登入未變動。"; Write-Host '  需要: 請到 PC2 本機檢查 C:\ProgramData\ssh\sshd_config。'; exit 4 }
+$cfgLines = $orig
+foreach ($kv in @(@('PasswordAuthentication', 'PasswordAuthentication'), @('KbdInteractiveAuthentication', '(KbdInteractiveAuthentication|ChallengeResponseAuthentication)'))) {
+    $out = New-Object System.Collections.Generic.List[string]; $hit = $false
+    foreach ($l in $cfgLines) { if ($l -match ('^\s*#?\s*' + $kv[1] + '\s')) { $out.Add($kv[0] + ' no'); $hit = $true } else { $out.Add($l) } }
+    if (-not $hit) {
+        $o2 = New-Object System.Collections.Generic.List[string]; $done = $false
+        foreach ($l in $out) { if (-not $done -and $l -match '^\s*Match\s') { $o2.Add($kv[0] + ' no'); $done = $true }; $o2.Add($l) }
+        if (-not $done) { $o2.Add($kv[0] + ' no') }
+        $out = $o2
+    }
+    $cfgLines = $out.ToArray()
+}
+# 只會取代或插入行，行數變少代表處理出錯；Match 區塊 (管理員金鑰的位置) 也必須保留
+$origMatch = @($orig | Where-Object { $_ -match '^\s*Match\s' }).Count
+$newMatch = @($cfgLines | Where-Object { $_ -match '^\s*Match\s' }).Count
+if ($cfgLines.Count -lt $orig.Count -or $newMatch -ne $origMatch) { Write-Host '[errorRequest:HARDEN_FAILED]'; Write-Host '  問題: 產生的新設定比原本少了內容，為避免鎖死已中止，密碼登入未變動。'; Write-Host '  需要: 請回報這個問題，並到 PC2 本機確認 C:\ProgramData\ssh\sshd_config 內容正常。'; exit 4 }
+# 先用 sshd -t 驗證新設定，通過才取代
+$tmp = "$cfg.pcx-new"
+$cfgLines | Set-Content $tmp -Encoding ascii
+$sshd = Join-Path $env:WINDIR 'System32\OpenSSH\sshd.exe'
+if (-not (Test-Path $sshd)) { $c = Get-Command sshd.exe -ErrorAction SilentlyContinue; if ($c) { $sshd = $c.Source } }
+if (Test-Path $sshd) {
+    $chk = & $sshd -t -f $tmp 2>&1
+    if ($LASTEXITCODE -ne 0) { Remove-Item $tmp -Force; Write-Host ($chk | Out-String); Write-Host '[errorRequest:HARDEN_FAILED]'; Write-Host '  問題: 新的 sshd 設定沒通過 sshd -t 檢查 (見上方訊息)，已中止，密碼登入未變動。'; Write-Host '  需要: 請到 PC2 本機檢查 C:\ProgramData\ssh\sshd_config。'; exit 4 }
+}
 Copy-Item $cfg "$cfg.pcx-bak" -Force
-# 密碼與 keyboard-interactive 都關掉 (設定行不存在時插在第一個 Match 之前，確保是全域設定)；經 -Command - 由 stdin 執行，每個敘述須寫在同一行
-$cfgLines = @(Get-Content $cfg)
-foreach ($kv in @(@('PasswordAuthentication', 'PasswordAuthentication'), @('KbdInteractiveAuthentication', '(KbdInteractiveAuthentication|ChallengeResponseAuthentication)'))) { $out = New-Object System.Collections.Generic.List[string]; $hit = $false; foreach ($l in $cfgLines) { if ($l -match ('^\s*#?\s*' + $kv[1] + '\s')) { $out.Add($kv[0] + ' no'); $hit = $true } else { $out.Add($l) } }; if (-not $hit) { $o2 = New-Object System.Collections.Generic.List[string]; $done = $false; foreach ($l in $out) { if (-not $done -and $l -match '^\s*Match\s') { $o2.Add($kv[0] + ' no'); $done = $true }; $o2.Add($l) }; if (-not $done) { $o2.Add($kv[0] + ' no') }; $out = $o2 }; $cfgLines = $out.ToArray() }
-$cfgLines | Set-Content $cfg -Encoding ascii
+Move-Item $tmp $cfg -Force
 $sf = Join-Path $env:ProgramData 'ssh\pcx-state.json'
 if (Test-Path $sf) { $s = Get-Content $sf -Raw | ConvertFrom-Json; $s.passwordDisabled = $true; $s | ConvertTo-Json | Set-Content $sf -Encoding utf8 }
 $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command "Start-Sleep 3; Restart-Service sshd; Unregister-ScheduledTask -TaskName pcx-restart -Confirm:$false"'
@@ -1177,7 +1206,7 @@ Register-ScheduledTask -TaskName 'pcx-restart' -Action $act -User 'SYSTEM' -RunL
 Start-ScheduledTask -TaskName 'pcx-restart'
 Write-Host '已設定關閉密碼登入，sshd 約 3 秒後重啟。'
 '@
-        $remote = 'powershell -NoProfile -Command -'
+        $remote = Get-WinStdinRemote
     }
     $r = Invoke-Capture -CmdArgs ($o + @($remote)) -StdIn (($script -replace "`r`n", "`n")) -TimeoutSec 60
     Write-Host ($r.Out + $r.Err).Trim()
